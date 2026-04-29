@@ -161,6 +161,7 @@ def pcd_to_surface(pcds: list[np.ndarray], dx, dy, force_same_size=True, bplt=Fa
                 
         # Average the bins and fill NaNs
         z_sum = np.divide(z_sum, counts, out=np.zeros_like(z_sum), where=counts!=0)
+        
         mean_val = np.nanmean(z_pts)
         z_sum[counts == 0] = mean_val
         
@@ -171,11 +172,12 @@ def pcd_to_surface(pcds: list[np.ndarray], dx, dy, force_same_size=True, bplt=Fa
         coords = np.array([
             (gy - y_min) / dy, 
             (gx - x_min) / dx
-        ])
+        ])[:, 0:-1, 0:-1]
         
-        print(f'[INFO PCD_TO_SUR] Converting pc using spacings dx: {dx:.3f} um, dy: {dy:.3f} um')
+        print(f'[INFO PCD_TO_SUR] Converting pc using spacings dx: {dx:.3f} um, dy: {dy:.3f} um, coords shape: {coords.shape}, mask shape: {counts.shape}')
         # order=3 is equivalent to cubic interpolation
         z_map = ndimage.map_coordinates(z_sum, coords, order=1, mode='nearest')
+        z_map = np.ma.array(z_map, mask=(counts == 0))
 
         z_maps.append(z_map)
 
@@ -240,7 +242,7 @@ class TransformParams:
         with open(filename, "r") as f:
             riga = list(f)[header + tr_n]
         riga = riga[3:].strip().replace(',', ' ')
-        values = list(map(float, riga.split()))
+        values = np.array(list(map(float, riga.split())))
         instance.tx, instance.ty, instance.tz, instance.rx, instance.ry, instance.rz = values
         return instance
     
@@ -399,10 +401,97 @@ def merge_and_downsample_point_cloud(pc1: np.ndarray, pc2: np.ndarray, voxel_siz
     return np.asarray(pc_down.points)
 
 @ensure_o3d_pc
-def show_point_cloud(point_clouds: list[o3d.geometry.PointCloud], colors="normal"):
+def show_point_clouds(point_clouds: list[o3d.geometry.PointCloud], colors="normal"):
     if colors is not None:
-        point_clouds = assign_defined_colors_to_point_clouds(point_clouds, colors)
+        point_clouds = assign_defined_colors_to_point_clouds(point_clouds, colors=colors)
     o3d.visualization.draw_geometries(point_clouds, point_show_normal=False)
+
+def compare_point_clouds(pc_lists: list[list[o3d.geometry.PointCloud]], colors: str | list[str]="normal"):
+    procs = []
+    if type(colors) == str: colors = [colors for _ in range(len(pc_lists))]
+    print(f"[INFO COMPARE PLOT] Plotting comparisons in multiple processes with colors: {colors}")
+
+    for i, pc_list in enumerate(pc_lists):
+        p = mp.Process(target=show_point_clouds, args=(pc_list, colors[i]))
+        p.start()
+
+        procs.append(p)
+    
+    for p in procs: p.join()
+
+def color_points_from_closest_triangle_normal(
+    pcd: o3d.geometry.PointCloud,
+    method: str = "poisson",
+    depth: int = 8,
+    alpha: float = 1.0,
+    orient_k: int = 30,
+    remove_low_density: bool = True,
+    density_quantile: float = 0.02,
+):
+    if len(pcd.points) == 0:
+        raise ValueError("Input point cloud is empty.")
+
+    pcd_work = o3d.geometry.PointCloud(pcd)
+
+    # Normals are needed for most mesh reconstruction methods
+    if len(pcd_work.normals) != len(pcd_work.points):
+        pcd_work.estimate_normals(
+            search_param=o3d.geometry.KDTreeSearchParamKNN(knn=20)
+        )
+
+    try:
+        pcd_work.orient_normals_consistent_tangent_plane(orient_k)
+    except Exception:
+        # If orientation fails, continue anyway
+        pass
+
+    # --- mesh reconstruction ---
+    if method.lower() == "poisson":
+        mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+            pcd_work, depth=depth
+        )
+
+        if remove_low_density:
+            densities = np.asarray(densities)
+            keep_mask = densities > np.quantile(densities, density_quantile)
+            mesh.remove_vertices_by_mask(~keep_mask)
+
+    elif method.lower() == "alpha":
+        tetra_mesh, pt_map = o3d.geometry.TetraMesh.create_from_point_cloud(pcd_work)
+        mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_alpha_shape(
+            pcd_work, alpha, tetra_mesh, pt_map
+        )
+    else:
+        raise ValueError("method must be either 'poisson' or 'alpha'")
+
+    if len(mesh.triangles) == 0:
+        raise RuntimeError("Mesh reconstruction failed: mesh has no triangles.")
+
+    mesh.compute_triangle_normals()
+    tri_normals = np.asarray(mesh.triangle_normals)
+
+    # --- convert mesh to tensor mesh for closest-triangle queries ---
+    tmesh = o3d.t.geometry.TriangleMesh.from_legacy(mesh)
+    scene = o3d.t.geometry.RaycastingScene()
+    _ = scene.add_triangles(tmesh)
+
+    points = np.asarray(pcd_work.points, dtype=np.float32)
+    query_points = o3d.core.Tensor(points, dtype=o3d.core.Dtype.Float32)
+
+    # closest_points gives the primitive_ids (triangle indices)
+    ans = scene.compute_closest_points(query_points)
+    tri_ids = ans["primitive_ids"].numpy()
+
+    # Some points may return invalid ids in edge cases
+    if np.any(tri_ids < 0):
+        raise RuntimeError("Some points could not be assigned to a closest triangle.")
+
+    point_normals = tri_normals[tri_ids]
+
+    # Map normals from [-1, 1] to [0, 1] for RGB coloring
+    colors = (point_normals + 1.0) / 2.0
+
+    return colors, mesh, tri_ids, tri_normals
 
 @ensure_o3d_pc
 def assign_defined_colors_to_point_clouds(point_clouds: list[o3d.geometry.PointCloud], colors: None | str = None):
@@ -416,27 +505,32 @@ def assign_defined_colors_to_point_clouds(point_clouds: list[o3d.geometry.PointC
     colors : list | None | str
         The colors, can be strings, rgb tuples, rgb vectors, color hex string, None or "normal" to color based on the point cloud's normals.
     """
-    # per colorare in base alle normali
-    if colors == "normal":
-        for i, pc in enumerate(point_clouds):
+    # init for uniform
+    num_pcs = len(point_clouds)
+    cmap = plt.get_cmap("tab10")  # pastel1, pastel2, Accent
+    unicolors = [cmap(j % 10) for j in range(num_pcs)]
+    
+    for i, pc in enumerate(point_clouds):
+        if colors == "normal":
             pc.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamKNN(knn=20))
             # pc.orient_normals_consistent_tangent_plane(10)
             # pc.orient_normals_to_align_with_direction([1, 0, 0])
             normals = np.asarray(pc.normals)
 
-            colors = (normals + 1) / 2  # da [-1,1] a [0,1]
-            pc.colors = o3d.utility.Vector3dVector(colors)
-        return point_clouds
+            ncolors = (normals + 1) / 2  # da [-1,1] a [0,1]
+            pc.colors = o3d.utility.Vector3dVector(ncolors)
 
-    elif colors == "uniform":
-        num_pcs = len(point_clouds)
-        cmap = plt.get_cmap("tab10")  # pastel1, pastel2, Accent
-        colors = [cmap(i % 10) for i in range(num_pcs)]
+        elif colors == "betternormal":
+            ncolors, _, _, _ = color_points_from_closest_triangle_normal(pc)
+            pc.colors = o3d.utility.Vector3dVector(ncolors)
 
-        return point_clouds
+        elif colors == "uniform":
+            raw_color = unicolors[i % len(unicolors)]
+            rgb_color = np.asarray(mcolors.to_rgb(raw_color))
+            
+            pc.paint_uniform_color(rgb_color)
 
-    else:
-        for i, pc in enumerate(point_clouds):
+        else:
             pts = np.asarray(pc.points)
             z = pts[:, 2]
 
@@ -448,32 +542,12 @@ def assign_defined_colors_to_point_clouds(point_clouds: list[o3d.geometry.PointC
             else:
                 z_norm = (z - z_min) / (z_max - z_min)
 
-            cmap = plt.get_cmap(colors)   # you can also try "turbo"
+            cmap = plt.get_cmap(colors)  # you can also try "turbo"
             rgb = cmap(z_norm)[:, :3]
-
             pc.colors = o3d.utility.Vector3dVector(rgb)
-
-            return point_clouds
-
-        for i, pc in enumerate(point_clouds):
-            raw_color = colors[i % len(colors)]
-            rgb_color = np.asarray(mcolors.to_rgb(raw_color))
-            
-            pc.paint_uniform_color(rgb_color)
-
-        return point_clouds
-    
-    else:
-        for i, pc in enumerate(point_clouds):
-            z = np.asarray(pc.points)[:, 2]
-            n1 = (z - z.min()) / (z.max() - z.min())
-            p = np.asarray(pc.points)
-            n2 = np.linalg.norm(p - np.mean(p, axis=0), axis=1) 
-            n2 = (n2 - n2.min()) / (n2.max() - n2.min())
-            cc = plt.get_cmap(colors)(n2 * n1)[:, :3]
-            pc.colors = o3d.utility.Vector3dVector(cc)
         
-        return point_clouds
+    return point_clouds
+    
 
 class Isolator():
     geometrical: str = 'geometrical'
@@ -500,7 +574,7 @@ class Isolator():
     
     @staticmethod
     def plot_isolated_areas(fixed_subset, moving_subset, fixed_pts, moving_pts): 
-        show_point_cloud([fixed_subset, moving_subset], colors=None)
+        show_point_clouds([fixed_subset, moving_subset], colors='uniform')
 
     @staticmethod
     def isolate_common_points_geometrical(fixed_pts: np.ndarray, moving_pts: np.ndarray, stitchprc=80, bplt=False):
@@ -534,21 +608,21 @@ class Isolator():
         if 'y' not in axes: y_mM = [-np.inf, +np.inf]
         if 'z' not in axes: z_mM = [-np.inf, +np.inf]
 
-        make_mask = lambda pts: (
+        make_selected_points = lambda pts: (
             (pts[:, 0] >= x_mM[0]) & (pts[:, 0] <= x_mM[1]) &
             (pts[:, 1] >= y_mM[0]) & (pts[:, 1] <= y_mM[1]) &
             (pts[:, 2] >= z_mM[0]) & (pts[:, 2] <= z_mM[1])
         )
 
-        fixed_subset = fixed_pts[make_mask(fixed_pts)]
-        moving_subset = moving_pts[make_mask(moving_pts)]
+        fixed_subset = fixed_pts[make_selected_points(fixed_pts)]
+        moving_subset = moving_pts[make_selected_points(moving_pts)]
             
         if bplt: Isolator.plot_isolated_areas(fixed_subset, moving_subset, fixed_pts, moving_pts)
 
         return fixed_subset, moving_subset
     
     @staticmethod
-    def isolate_common_points_kdtree(fixed_pts: np.ndarray, moving_pts: np.ndarray, max_distance: float=None, bplt=False):
+    def isolate_common_points_kdtree(fixed_pts: np.ndarray, moving_pts: np.ndarray, max_distance: float=None, bins_after_max=1, bplt=False):
         A_to_B = lambda A, B: cKDTree(B).query(A, k=1)
 
         dist_f2m, _ = A_to_B(fixed_pts, moving_pts)
@@ -557,7 +631,7 @@ class Isolator():
         if max_distance is None:
             dist_hist, dist_bins = np.histogram(np.hstack((dist_f2m, dist_m2f)), 50)
 
-            max_distance = dist_bins[np.nanargmax(dist_hist) + 1]
+            max_distance = dist_bins[np.nanargmax(dist_hist) + bins_after_max]
 
             if bplt:
                 fig, ax = plt.subplots()
@@ -574,11 +648,9 @@ class Isolator():
         fixed_subset = fixed_pts[dist_f2m <= max_distance]
         moving_subset = moving_pts[dist_m2f <= max_distance]
 
-        ax = None
-
         if bplt:
             Isolator.plot_isolated_areas(fixed_subset, moving_subset, fixed_pts, moving_pts)
-        return fixed_subset, moving_subset, ax
+        return fixed_subset, moving_subset
  
     @staticmethod
     def isolate_manual(left_pcd: np.ndarray, right_pcd: np.ndarray):
@@ -620,7 +692,7 @@ class Isolator():
             vis.add_geometry(pcd_o3d)
 
             render_option = vis.get_render_option()
-            render_option.point_size = 0.5
+            render_option.point_size = 2
 
             vis.run()
             vis.destroy_window()
@@ -676,11 +748,11 @@ def KDTree_mutual_diffs(fixed_points, moving_points):
     dist_f2m, idx_f2m = moving_tree.query(fixed_points, k=1, workers= -1)
     dist_m2f, idx_m2f = fixed_tree.query(moving_points, k=1, workers= -1)
 
-    mask = (np.arange(len(fixed_points)) == idx_m2f[idx_f2m])
-    if not np.any(mask):
+    selected_points = (np.arange(len(fixed_points)) == idx_m2f[idx_f2m])
+    if not np.any(selected_points):
         return float('inf')
     
-    diffs = fixed_points[mask] - moving_points[idx_f2m[mask]]
+    diffs = fixed_points[selected_points] - moving_points[idx_f2m[selected_points]]
     return diffs
 
 def _composeFigure(left, right, T, R=None, support=None, sp=20):
@@ -901,7 +973,7 @@ class SurfaceStitcher:
         transforms_folder = Path(transforms_folder)
 
         fixed = np.asarray(point_clouds[0])
-        point_clouds_T = []
+        point_clouds_T = [point_clouds[0]]
 
         transform_files = sorted(
             transforms_folder.glob("*.pkl"),
@@ -918,8 +990,9 @@ class SurfaceStitcher:
         for i, pc in enumerate(point_clouds[start_i:]):
             moving = np.asarray(pc)
 
-            transform_file = transform_files[i]
-            params = TransformParams.from_pickle(transform_file)
+            loaded_params = [TransformParams.from_pickle(f) for f in transform_files]
+            params = loaded_params[i]
+            # params = TransformParams.from_pickle(transform_file)
 
             moved = apply_transform(moving, params, params0=params0)
             point_clouds_T.append(moved)
@@ -927,23 +1000,41 @@ class SurfaceStitcher:
             fixed = np.vstack([fixed, moved])
 
         if bplt:
-            show_point_cloud([fixed], colors="height")
-            show_point_cloud([point_clouds[0]] + point_clouds_T, colors="height")
+            # show_point_clouds([fixed], colors="uniform")
+            # show_point_clouds(point_clouds_T, colors="normal")
+            compare_point_clouds([[fixed], point_clouds_T], ["betternormal", "uniform"])
 
         return fixed, point_clouds_T
 
     @staticmethod
     @ensure_numpy_pcd
-    def stitchManual(point_clouds: list[np.ndarray], radius=5,  bplt=False, save_transform=None):
+    def stitchManual(point_clouds: list[np.ndarray], points_in_sphere=100,  bplt=False, save_transform=None):
 
-        def get_patch(cloud, center, r):
-            dists = np.linalg.norm(cloud - center, axis=1)
-            print(f"get_patch found {len(mask := (cloud[dists < r]))} points near selected point ({center})")
-            mean_patch_point = np.mean(mask, axis=0)
+        def get_n_closest_points(pcd, center):
+            # n_points = pcd.shape[0]
+            # auto_radius = (n_points / 100) * 0.05
+            # print(f"RADIUS: {auto_radius}")
+            tmp = pcd - center
+            modules = np.linalg.norm(tmp, axis=1)
+            indices = np.argsort(modules)[:points_in_sphere]
+            
+            return indices
+
+        def get_patch(cloud, center):
+            mean_patch_point = np.mean(cloud[get_n_closest_points(cloud, center)], axis=0)
             return mean_patch_point
         
         def optimize(fixed, moving):
-            fp, mp = Isolator.isolate_manual(fixed, moving)
+
+            voxel_size = 100
+
+            fixed_o3d = pcd_to_o3d_pcd(fixed)
+            moving_o3d = pcd_to_o3d_pcd(moving)
+
+            fp_d = np.asarray(fixed_o3d.points)
+            mp_d = np.asarray(moving_o3d.points)
+            
+            fp, mp = Isolator.isolate_manual(fp_d, mp_d)
             
             if len(fp) != len(mp):
                 raise RuntimeError("[ERROR MANUAL] Select same amount of points from left and right")
@@ -955,8 +1046,8 @@ class SurfaceStitcher:
             moving_patches = []
 
             for pf, pm in zip(fp, mp):
-                fixed_patches.append(get_patch(fixed, pf, radius))
-                moving_patches.append(get_patch(moving, pm, radius))
+                fixed_patches.append(get_patch(fixed, pf))
+                moving_patches.append(get_patch(moving, pm))
 
             fp = np.vstack(fixed_patches)
             mp = np.vstack(moving_patches)
@@ -970,7 +1061,7 @@ class SurfaceStitcher:
             return moved
 
         fixed = np.asarray(point_clouds[0])
-        point_clouds_T = []
+        point_clouds_T = [point_clouds[0]]
 
         for i, pc in enumerate(point_clouds[1:]):            
             moving = np.asarray(pc)
@@ -980,8 +1071,8 @@ class SurfaceStitcher:
             fixed = np.vstack([fixed, moved])
 
         if bplt: 
-            show_point_cloud([fixed], colors="height")
-            show_point_cloud([point_clouds[0]] + point_clouds_T, colors="height")
+            show_point_clouds([fixed], colors=None)
+            show_point_clouds(point_clouds_T, colors=None)
 
         return fixed, point_clouds_T
 
@@ -1014,22 +1105,21 @@ class SurfaceStitcher:
         print(f"[INFO ROBOT STITCH] Loaded {len(robot_trans)} robot transformations for {len(point_clouds_clean)} surfaces")
         
         point_clouds_T = []
-        fixed_ref = point_clouds_clean[0]
+        fixed = point_clouds_clean[0]
         for pc, trasf in zip(point_clouds_clean, robot_trans):
             pts = pc
             pts_T = apply_transform(pts, trasf, params0=robot_trans[0])
             point_clouds_T.append(pts_T)
-            fixed_ref = merge_and_downsample_point_cloud(fixed_ref, pts_T)
+            fixed = merge_and_downsample_point_cloud(fixed, pts_T)
 
         if bplt: 
-            show_point_cloud([fixed_ref])
-            show_point_cloud(point_clouds_T, colors=None)
+            compare_point_clouds([[fixed], point_clouds_T], ["afmhot", "uniform"])
         
-        return fixed_ref, point_clouds_T    
+        return fixed, point_clouds_T
 
     @staticmethod
     @ensure_numpy_pcd
-    def stitchRMSE(point_clouds_T: list[np.ndarray], n_calls, isolator: Isolator, save_transform=None, bplt=False):
+    def stitchRMSE(point_clouds: list[np.ndarray], n_calls, isolator: Isolator, save_transform=None, bplt=False):
         """
         Finds the best alignment between transformed point clouds
         by minimizing the RMSE between mutually matched points
@@ -1058,7 +1148,7 @@ class SurfaceStitcher:
             aligning and merging all point clouds
         """
         def optimize(fixed_pts, moving_pts):
-            U_tx, U_ty, U_tz = 55.2, 60.6, 69.3  
+            U_tx, U_ty, U_tz = 56, 56, 56  
             U_theta = 0.5
 
             # tx ty tz rx ry rz
@@ -1069,7 +1159,9 @@ class SurfaceStitcher:
                 moved = apply_transform(moving_pts, p)
 
                 fixed_sub, moved_sub = isolator.apply_isolator(fixed_pts, moved, bplt=False)
+                plt.show()
                 diffs = KDTree_mutual_diffs(fixed_sub, moved_sub)  # just use the dıfference, not the mutual kdtree
+
                 rmse = np.sqrt(np.mean(np.sum(diffs**2, axis=1)))
                 
                 npoints.append(len(diffs))
@@ -1084,8 +1176,8 @@ class SurfaceStitcher:
                 Real(t0[4] - U_theta, t0[4] + U_theta),
                 Real(t0[5] - U_theta, t0[5] + U_theta),
             ]
-
-            res = gp_minimize(objective, space, x0=t0, n_calls=n_calls, random_state=42)
+            
+            res = gp_minimize(objective, space, x0=t0, n_calls=n_calls, random_state=42, n_jobs=4, verbose=True)
 
             best = res.x
             best_p = TransformParams.from_list(best)
@@ -1095,15 +1187,17 @@ class SurfaceStitcher:
 
             return aligned, res
         
-        fixed = np.asarray(point_clouds_T[0])
+        fixed = np.asarray(point_clouds[0])
+        point_clouds_T = [point_clouds[0]]
 
-        for i, pc in enumerate(point_clouds_T[1:]):
+        for i, pc in enumerate(point_clouds[1:]):
             rmses = []
             npoints = []
             
             moving = np.asarray(pc)
             print(f'[INFO RMSE] Optimizing image {i}')
             optimized_moving, _ = optimize(fixed, moving)
+            point_clouds_T.append(optimized_moving)
 
             fixed = np.vstack([fixed, optimized_moving])
 
@@ -1121,16 +1215,14 @@ class SurfaceStitcher:
                 bx.set_ylabel("npoints")
                 bx.grid(True)
 
-        fixed_pc = fixed
-
         if bplt:
-            show_point_cloud([fixed_pc], colors=None)
+            compare_point_clouds([[fixed], point_clouds_T], ["viridis", "uniform"])
 
-        return fixed_pc
+        return fixed, point_clouds_T
     
     @staticmethod
     @ensure_numpy_pcd
-    def stitchICP(point_clouds_T: list[np.ndarray], thresholder: Thresholder, isolator: None | Isolator, save_transform, bplt=False):
+    def stitchICP(point_clouds: list[np.ndarray], thresholder: Thresholder, isolator: None | Isolator, save_transform, bplt=False):
         """
         Refines the alignment of transformed point clouds using ICP.
 
@@ -1196,27 +1288,27 @@ class SurfaceStitcher:
 
             return aligned, reg_p2p
         
-        fixed = np.asarray(point_clouds_T[0])
+        fixed = np.asarray(point_clouds[0])
+        point_clouds_T = [point_clouds[0]]
 
-        for i, pc in enumerate(point_clouds_T[1:]):
+        for i, pc in enumerate(point_clouds[1:]):
             moving = np.asarray(pc)
 
             print(f"[INFO ICP] Optimizing image {i}")
 
             optimized_moving, _ = optimize(fixed, moving)
+            point_clouds_T.append(optimized_moving)
 
             fixed = np.vstack([fixed, optimized_moving])
 
-        fixed_pc = fixed
-
         if bplt:
-            show_point_cloud([fixed_pc])
+            compare_point_clouds([[fixed], point_clouds_T], ["viridis", "uniform"])
 
-        return fixed_pc
+        return fixed, point_clouds_T
 
     @staticmethod
     @ensure_numpy_pcd
-    def stitchFGR(point_clouds_T: list[np.ndarray], voxel_size: float, thresholder: Thresholder, isolator: None | Isolator, save_transform, bplt=False):
+    def stitchFGR(point_clouds: list[np.ndarray], voxel_size: float, thresholder: Thresholder, isolator: None | Isolator, save_transform, bplt=False):
 
         def optimize(fixed_pts, moving_pts):
             [fixed_scaled, moving_scaled], scales = rescale_point_cloud([fixed_pts, moving_pts])
@@ -1278,33 +1370,33 @@ class SurfaceStitcher:
 
             return aligned
 
-        fixed = np.asarray(point_clouds_T[0])
+        fixed = np.asarray(point_clouds[0])
+        point_clouds_T = [point_clouds[0]]
 
-        for i, pc in enumerate(point_clouds_T[1:]):
+        for i, pc in enumerate(point_clouds[1:]):
             moving = np.asarray(pc)
             print(f"[INFO FGR] Optimizing image {i}")
             optimized_moving = optimize(fixed, moving)
+            point_clouds_T.append(optimized_moving)
             fixed = np.vstack([fixed, optimized_moving])
 
         if bplt:
-            show_point_cloud([fixed])
+            compare_point_clouds([[fixed], point_clouds_T], ["viridis", "uniform"])
 
-        return fixed
+        return fixed, point_clouds_T
 
     @staticmethod
     @ensure_numpy_pcd
-    def stitchCorrelation(point_clouds_T: list[np.ndarray], dx: float, dy: float, isolator: None | Isolator, samplingPrc, correlateDer=True, save_transform=None, bplt=False):
+    def stitchCorrelation(point_clouds: list[np.ndarray], dx: float, dy: float, isolator: None | Isolator, correlateDer=True, save_transform=None, bplt=False):
 
         def optimize(fixed_pts, moving_pts):
 
             if isolator != None:
-                fixed_subset, moving_subset = isolator.apply_isolator(fixed_pts, moving_pts, bplt=bplt)
+                fixed_subset, moving_subset = isolator.apply_isolator(fixed_pts, moving_pts, bplt=False)
             else:
                 fixed_subset, moving_subset = fixed_pts, moving_pts
 
-            fixed_surf, moving_surf = pcd_to_surface([fixed_subset, moving_subset], dx, dy, True, bplt=True)
-
-            plt.show()
+            fixed_surf, moving_surf = pcd_to_surface([fixed_subset, moving_subset], dx, dy, force_same_size=True, bplt=False)
 
             print('shapes:', fixed_surf.Z.shape, moving_surf.Z.shape)
 
@@ -1318,12 +1410,17 @@ class SurfaceStitcher:
 
             if correlateDer:
                 lzone = np.diff(lzone)
-                rzone = np.diff(rzone)  
+                rzone = np.diff(rzone)
+
+            mask = np.logical_or(lzone.mask, rzone.mask)
+            plt.figure()
+            plt.imshow(mask, origin='lower')
 
             shift, _, _ = phase_cross_correlation(
                 lzone,
                 rzone,
-                upsample_factor=10
+                upsample_factor=10,
+                reference_mask=np.logical_not(mask)
             )
 
             shift_y, shift_x = shift
@@ -1340,73 +1437,23 @@ class SurfaceStitcher:
                 funct.persFig([ax, bx], xlab='x [pixels]', ylab='y [pixels]', gridcol='none')
                 plt.show()
 
-
-
-            # center_x, center_y = lzone.shape[0] // 2, lzone.shape[1] // 2
-            # size_x = lzone.shape[0] * samplingPrc // 100
-            # size_y = lzone.shape[1] * samplingPrc // 100
-
-            # get_sample = lambda arr: arr[
-            # center_x - size_x // 2 : center_x + size_x // 2,
-            # center_y - size_y // 2 : center_y + size_y // 2
-            # ]
-
-            # sampleL = get_sample(lzone)
-            # sampleR = get_sample(rzone)
-
-
-
-        #     ccL = signal.correlate2d(lzone, sampleR, mode='valid')
-        #     ccR = signal.correlate2d(rzone, sampleL, mode='valid')
-
-        #     ML = np.argmax(ccL)
-        #     yML, xML = np.unravel_index(ML, ccL.shape)
-        #     print(f"[INFO COR] {ML=} {xML=} {yML=}")
-
-        #     MR = np.argmax(ccR)
-        #     yMR, xMR = np.unravel_index(MR, ccR.shape)
-        #     print(f"[INFO COR] {MR=} {xMR=} {yMR=}")
-
-        #     bestLTranslation = [ccL.shape[1] // 2 - xML, ccL.shape[0] // 2 - yML]
-        #     bestRTranslation = [ccR.shape[1] // 2 - xMR, ccR.shape[0] // 2 - yMR]
-
-        #     meanTranslation = [(bestLTranslation[i] - bestRTranslation[i]) // 2 for i in [0, 1]]
-        #     print(f"[INFO COR] {bestLTranslation=}")
-        #     print(f"[INFO COR] {bestRTranslation=}")
-        #     print(f"[INFO COR] {meanTranslation=}")
-
-        #     flippedccR = np.flip(ccR)
-        #     cross_cc = ccL * flippedccR
-
-        #     M = np.argmax(cross_cc)
-        #     yM, xM = np.unravel_index(M, cross_cc.shape)
-        #     bestMeanTranslation = [cross_cc.shape[1] // 2 - xM, cross_cc.shape[0] // 2 - yM]
-
-        #     print(f"[INFO COR] {M=} {xM=} {yM=}")
-        #     print(f"[INFO COR] {bestMeanTranslation=}")
-
-        #     tx = bestMeanTranslation[0] * dx
-        #     ty = bestMeanTranslation[1] * dy
-
-            temp = moving_pts.copy()
-            temp[:, :2] += [tx, ty]
-
-            mask_f = (fixed_pts[:, 0] >= temp[:, 0].min()) & (fixed_pts[:, 0] <= temp[:, 0].max()) & (fixed_pts[:, 1] >= temp[:, 1].min()) & (fixed_pts[:, 1] <= temp[:, 1].max())
-            mask_m = (temp[:, 0] >= fixed_pts[:, 0].min()) & (temp[:, 0] <= fixed_pts[:, 0].max()) & (temp[:, 1] >= fixed_pts[:, 1].min()) & (temp[:, 1] <= fixed_pts[:, 1].max())
-            tz = np.median(fixed_pts[mask_f, 2]) - np.median(temp[mask_m, 2])
-            # if isolator != None:
-            #     fix_sub, temp_sub = isolator.apply_isolator(fixed_pts, temp, bplt=bplt)
-
-            # tz = np.median(fix_sub[:, 2]) - np.median(temp_sub[:, 2])
-
             aligned = moving_pts.copy()
             aligned[:, 0] += tx
             aligned[:, 1] += ty
+
+            # temp = moving_pts.copy()
+            # temp[:, :2] += [tx, ty]
+
+            # selected_points_f = (fixed_pts[:, 0] >= temp[:, 0].min()) & (fixed_pts[:, 0] <= temp[:, 0].max()) & (fixed_pts[:, 1] >= temp[:, 1].min()) & (fixed_pts[:, 1] <= temp[:, 1].max())
+            # selected_points_m = (temp[:, 0] >= fixed_pts[:, 0].min()) & (temp[:, 0] <= fixed_pts[:, 0].max()) & (temp[:, 1] >= fixed_pts[:, 1].min()) & (temp[:, 1] <= fixed_pts[:, 1].max())
+            # tz = np.median(fixed_pts[selected_points_f, 2]) - np.median(temp[selected_points_m, 2])
+
+            fix_sub, temp_sub = isolator.isolate_common_points_kdtree(fixed_pts, aligned, bins_after_max=1, bplt=True)
+            tz = np.nanmean(fix_sub[:, 2]) - np.nanmean(temp_sub[:, 2])
+
             aligned[:, 2] += tz
 
-            rx = ry = rz = 0
-
-            tr = TransformParams.from_numbers(tx, ty, tz, rx, ry, rz)
+            tr = TransformParams.from_numbers(tx, ty, tz, 0, 0, 0)
             if save_transform is not None: tr.to_pickle(os.path.join(save_transform, f"{i}.pkl"))
 
             print(f"before mean z = {np.mean(moving_pts[:, 2])}")
@@ -1445,15 +1492,17 @@ class SurfaceStitcher:
 
             return aligned, [tx, ty]
 
-        fixed = np.asarray(point_clouds_T[0])
+        fixed = np.asarray(point_clouds[0])
+        point_clouds_T = [point_clouds[0]]
 
-        for i, pc in enumerate(point_clouds_T[1:]):
+        for i, pc in enumerate(point_clouds[1:]):
             moving = np.asarray(pc)
             print(f"[INFO COR] Optimizing image {i}")
             optimized_moving, _ = optimize(fixed, moving)
+            point_clouds_T.append(optimized_moving)
             fixed = np.vstack([fixed, optimized_moving])
 
         if bplt:
-            show_point_cloud([fixed])
+            compare_point_clouds([[fixed], point_clouds_T], ["viridis", "uniform"])
 
-        return fixed
+        return fixed, point_clouds_T
