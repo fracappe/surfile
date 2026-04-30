@@ -4,7 +4,7 @@
 /stuff/
 /pyDoc/
 /scripts/
-/surfile/__pycache__/
+*__pycache__/
 ScreenCamera*
 ScreenCapture*
 DepthCamera*
