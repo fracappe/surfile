@@ -14,7 +14,8 @@ import os
 import numpy as np
 
 import sys
-sys.path.append("..\\")
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+
 import surfile.measfile_io as fio
 from surfile.stitcher.stitcher import SurfaceStitcher, Isolator, Thresholder
 
@@ -54,10 +55,8 @@ def get_user_method_choice(methods):
             return selected_keys
         except (ValueError, IndexError):
             print("❌ Invalid input. Please enter valid numbers from the list.")
-
-
-if __name__ == "__main__":
-    # --- 1. Setup Tkinter and get folder path ---
+            
+def apply_stitch_sequence(bplt=True):
     root = tk.Tk()
     root.withdraw()  # Hide the main Tkinter window
 
@@ -72,7 +71,7 @@ if __name__ == "__main__":
     print(f"📂 Loading point clouds from: {folder_path}")
     try:
         # Using a downsample factor to speed up tests, adjust if needed.
-        point_clouds = fio.open_pc_from_file(folder_path, downsample=5)
+        point_clouds = fio.open_pc_from_dir(folder_path, downsample=5)
         if not point_clouds or len(point_clouds) < 2:
             raise ValueError(
                 "Could not load at least two point clouds for stitching."
@@ -106,25 +105,25 @@ if __name__ == "__main__":
     # Each function now accepts a list of point clouds (`pcs`) as input.
     test_methods = {
         "ICP (Iterative Closest Point)": lambda pcs, save_transform: SurfaceStitcher.stitchICP(
-            pcs, thresholder_kdtree, isolator_maxmin, save_transform=save_transform, bplt=True
+            pcs, thresholder_kdtree, isolator_maxmin, save_transform=save_transform, bplt=bplt
         ),
         "FGR (Fast Global Registration)": lambda pcs, save_transform: SurfaceStitcher.stitchFGR(
-            pcs, voxel_size=0.1, thresholder=thresholder_kdtree, isolator=isolator_maxmin, save_transform=save_transform, bplt=True
+            pcs, voxel_size=0.1, thresholder=thresholder_kdtree, isolator=isolator_maxmin, save_transform=save_transform, bplt=bplt
         ),
         "RMSE (Bayesian Optimization)": lambda pcs, save_transform: SurfaceStitcher.stitchRMSE(
-            pcs, n_calls=50, isolator=isolator_maxmin, save_transform=save_transform, bplt=True
+            pcs, n_calls=50, isolator=isolator_maxmin, save_transform=save_transform, bplt=bplt
         ),
         "2D Correlation": lambda pcs, save_transform: SurfaceStitcher.stitchCorrelation(
-            pcs, dx=0.1, dy=0.1, isolator=isolator_maxmin, save_transform=save_transform, bplt=True
+            pcs, dx=0.1, dy=0.1, isolator=isolator_maxmin, save_transform=save_transform, bplt=bplt
         ),
         "Manual Point Selection": lambda pcs, save_transform: SurfaceStitcher.stitchManual(
-            pcs, save_transform=save_transform, bplt=True
+            pcs, save_transform=save_transform, bplt=bplt
         ),
         "Robot-based Transforms": lambda pcs, save_transform, robot_file_path: SurfaceStitcher.stitchRobot(
             pcs,
             robotTfile=robot_file_path, # robot_file_path will be determined dynamically
             save_transform=save_transform,
-            bplt=True
+            bplt=bplt
         ),
     }
 
@@ -150,16 +149,15 @@ if __name__ == "__main__":
             # Check if there are actual .pkl files in the folder and if the count matches
             pkl_files = [f for f in os.listdir(method_transform_folder) if f.endswith(".pkl")]
             if len(pkl_files) == len(current_point_clouds) - 1:
-                while True:
-                    choice = input(
-                        f"Transforms for '{method_name}' already exist in '{method_transform_folder}'.\n"
-                        "Do you want to [R]un the method or [L]oad saved transforms? (R/L): "
-                    ).lower()
-                    if choice in ['r', 'l']:
-                        use_saved_transforms = (choice == 'l')
-                        break
-                    else:
-                        print("Invalid choice. Please enter 'R' or 'L'.")
+                choice = input(
+                    f"Transforms for '{method_name}' already exist in '{method_transform_folder}'.\n"
+                    "Do you want to [R]un the method or [L]oad saved transforms? (r/L): "
+                ).lower()
+                if choice in ['r', 'l']:
+                    use_saved_transforms = (choice == 'l')
+                else:
+                    use_saved_transforms = True
+                        
             elif len(pkl_files) > 0:
                 print(f"⚠️ Warning: Found {len(pkl_files)} transform files for '{method_name}' in '{method_transform_folder}', but expected {len(current_point_clouds) - 1}. Running the method instead of loading.")
                 use_saved_transforms = False # Force running the method if file count mismatch
@@ -168,7 +166,7 @@ if __name__ == "__main__":
             if use_saved_transforms:
                 print(f"🔄 Loading saved transforms for '{method_name}' from '{method_transform_folder}'...")
                 stitched_cloud, transformed_clouds = SurfaceStitcher.stitchSavedTransforms(
-                    current_point_clouds, transforms_folder=method_transform_folder, bplt=True
+                    current_point_clouds, transforms_folder=method_transform_folder, bplt=bplt
                 )
             else:
                 if method_name == "Robot-based Transforms":
@@ -191,4 +189,9 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"❌ An error occurred during '{method_name}': {e}")
 
-    print("\n🎉 All selected tests have been executed!")
+    print("\n🎉 All selected stitching methods completed!")
+    return current_point_clouds
+    
+if __name__ == "__main__":
+    # --- 1. Setup Tkinter and get folder path ---
+    apply_stitch_sequence()

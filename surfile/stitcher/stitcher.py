@@ -425,7 +425,7 @@ class Isolator():
         ----------
         type : str
             The isolation strategy to use. Must be one of 'geometrical',
-            'maxmin', 'KDTree', or 'manual'.
+            'maxmin', 'KDTree', 'manual', or 'convex_hull'.
         stitchprc : int, optional
             Percentage of overlap for the 'geometrical' method. Defaults to 80.
         max_distance : float or None, optional
@@ -440,13 +440,28 @@ class Isolator():
         self.axes = axes
 
     def apply_isolator(self, fixed_pts: np.ndarray, moving_pts: np.ndarray, bplt=False):
-        if self.type == 'geometrical': return self.isolate_common_points_geometrical(fixed_pts, moving_pts, self.stitchprc, bplt)
-        elif self.type == 'maxmin': return self.isolate_common_points_max_min(fixed_pts, moving_pts, self.axes, bplt)
-        elif self.type == 'KDTree': return self.isolate_common_points_kdtree(fixed_pts, moving_pts, self.max_distance, bplt)
+        if self.type == 'geometrical': return self.isolate_common_points_geometrical(fixed_pts, moving_pts, self.stitchprc, bplt=bplt)
+        elif self.type == 'maxmin': return self.isolate_common_points_max_min(fixed_pts, moving_pts, self.axes, bplt=bplt)
+        elif self.type == 'KDTree': return self.isolate_common_points_kdtree(fixed_pts, moving_pts, self.max_distance, bplt=bplt)
         elif self.type == 'manual': return self.isolate_manual(fixed_pts, moving_pts)
+        elif self.type == 'convex_hull': return self.isolate_convex_hull(fixed_pts, moving_pts, bplt=bplt)
 
         else:
             raise ValueError('Unknown isolator type')
+        
+    @staticmethod
+    def plot_colored_distances(fixed_pts, moving_pts, log=False, cmap=plt.cm.plasma):
+        """Helper function to visualize the distance-based isolation."""
+        dist_f2m, _ = cKDTree(moving_pts).query(fixed_pts, k=1)
+        dist_m2f, _ = cKDTree(fixed_pts).query(moving_pts, k=1)
+        
+        if log:
+            dist_f2m = np.log(dist_f2m)
+            dist_m2f = np.log(dist_m2f)
+        
+        fixed_colors = cmap(dist_f2m / np.max(dist_f2m))[:, :3]
+        moving_colors = cmap(dist_m2f / np.max(dist_m2f))[:, :3]
+        splotter.show_point_clouds([fixed_pts, moving_pts], colors=[fixed_colors, moving_colors])
 
     @staticmethod
     def plot_isolated_areas(fixed_subset, moving_subset, fixed_pts, moving_pts): 
@@ -500,7 +515,9 @@ class Isolator():
         dist_moving = (moving_pts - moving_center) @ moving_dir
         moving_subset = moving_pts[norm * (1 - stitchprc / 100) <= -dist_moving]
 
-        if bplt: Isolator.plot_isolated_areas(fixed_subset, moving_subset, fixed_pts, moving_pts)
+        if bplt: 
+            Isolator.plot_isolated_areas(fixed_subset, moving_subset, fixed_pts, moving_pts)
+            Isolator.plot_colored_distances(fixed_subset, moving_subset, log=True)
 
         return fixed_subset, moving_subset
 
@@ -560,8 +577,9 @@ class Isolator():
         fixed_subset = fixed_pts[make_selected_points(fixed_pts)]
         moving_subset = moving_pts[make_selected_points(moving_pts)]
 
-        if bplt: Isolator.plot_isolated_areas(fixed_subset, moving_subset, fixed_pts, moving_pts)
-
+        if bplt: 
+            Isolator.plot_isolated_areas(fixed_subset, moving_subset, fixed_pts, moving_pts)
+            Isolator.plot_colored_distances(fixed_subset, moving_subset, log=True)
         return fixed_subset, moving_subset
 
     @staticmethod
@@ -607,7 +625,7 @@ class Isolator():
 
             max_distance = dist_bins[np.nanargmax(dist_hist) + bins_after_max]
 
-            if bplt:
+            if False:
                 fig, ax = plt.subplots()
 
                 ax.hist(dist_f2m, bins=50, alpha=0.5, label="fixed → moving")
@@ -618,12 +636,15 @@ class Isolator():
 
                 ax.set_xlabel("Distance")
                 ax.set_ylabel("Count")
+                
+                plt.show()
 
         fixed_subset = fixed_pts[dist_f2m <= max_distance]
         moving_subset = moving_pts[dist_m2f <= max_distance]
 
         if bplt:
             Isolator.plot_isolated_areas(fixed_subset, moving_subset, fixed_pts, moving_pts)
+            Isolator.plot_colored_distances(fixed_subset, moving_subset, log=True)
         return fixed_subset, moving_subset
 
     @staticmethod
@@ -667,6 +688,44 @@ class Isolator():
         print()
         print(f"\033[96mSelected point right =\033[0m",
                np.array2string(moving_subset, formatter={'float_kind': lambda x: f"{x:.8f}"}))
+
+        return fixed_subset, moving_subset
+    
+    @staticmethod
+    def isolate_convex_hull(left_pcd, right_pcd, bplt=False):
+        """
+        Isolate points by selecting the points that lie within the convex hull of the other cloud.
+        
+        Parameters
+        ----------
+        left_pcd : np.ndarray
+            The first point cloud.
+        right_pcd : np.ndarray
+            The second point cloud.
+        
+        Returns
+        -------
+        tuple[np.ndarray, np.ndarray]
+            A tuple containing the selected points from the left and right clouds.
+        """
+        from scipy.spatial import ConvexHull, Delaunay
+
+        def points_in_hull(points, hull):
+            delaunay = Delaunay(hull.points[hull.vertices])
+            return delaunay.find_simplex(points) >= 0
+
+        hull_left = ConvexHull(left_pcd)
+        hull_right = ConvexHull(right_pcd)
+
+        left_in_right = points_in_hull(left_pcd, hull_right)
+        right_in_left = points_in_hull(right_pcd, hull_left)
+
+        fixed_subset = left_pcd[left_in_right]
+        moving_subset = right_pcd[right_in_left]
+        
+        if bplt: 
+            Isolator.plot_isolated_areas(fixed_subset, moving_subset, left_pcd, right_pcd)
+            Isolator.plot_colored_distances(fixed_subset, moving_subset, log=True)
 
         return fixed_subset, moving_subset
 

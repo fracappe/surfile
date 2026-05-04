@@ -41,7 +41,7 @@ except ImportError:
 
 
 ############## point cloud file management ############
-def open_pc_from_file(path: str, NM='remove', userScales=[1, 1, 1], downsample=1, resave={'resave': False, 'resample': 10}) -> np.ndarray:
+def open_pc_from_dir(path: str, NM='remove', userScales=[1, 1, 1], downsample=1, resave={'resave': False, 'resample': 10}) -> np.ndarray:
 
     pc_list = []
     for f in os.listdir(path):
@@ -96,24 +96,6 @@ def open_pc_from_file(path: str, NM='remove', userScales=[1, 1, 1], downsample=1
     assert len(pc_list) > 0, "[ERROR OPEN PC FILE] Empty list!!!" 
 
     return pc_list
-
-############## surface file management ############
-def open_sur_from_folder(folder_path):
-    surfaces =  []
-
-    for (_, _, files) in walk(folder_path):
-        pickled_files = [f for f in files if f.endswith("_pikled.npy") or f.endswith("_resaved.npy")]
-
-        if len(pickled_files) > 0:
-            for f in pickled_files:
-                full_path = os.path.join(folder_path, f)
-                s = open_sur_from_pickle(full_path)
-                surfaces.append(s)
-
-        else:
-            print('[ERROR OPEN SUR FOLDER] No pickled files in folder')
-
-    return surfaces
 
 def open_sur_from_pickle(path):
     sur = np.load(path, allow_pickle=True).item()

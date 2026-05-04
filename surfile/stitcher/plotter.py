@@ -179,14 +179,14 @@ def color_points_from_closest_triangle_normal(pcd: o3d.geometry.PointCloud, meth
     return colors, mesh, tri_ids, tri_normals
 
 @sutils.ensure_o3d_pc
-def assign_defined_colors_to_point_clouds(point_clouds: list[o3d.geometry.PointCloud], colors: None | str = None):
+def assign_defined_colors_to_point_clouds(point_clouds: list[o3d.geometry.PointCloud], colors: None | str | list[np.ndarray] = None):
     """Assign colors to a list of point clouds based on a defined scheme.
 
     Parameters
     ----------
     point_clouds : list[o3d.geometry.PointCloud]
         A list of PointCloud objects to be colored.
-    colors : str or None, optional
+    colors : str, list or None, optional
         The coloring scheme to apply. The options are:
         - "uniform": Assigns a unique, uniform color to each point cloud in
           the list from a predefined colormap.
@@ -199,6 +199,8 @@ def assign_defined_colors_to_point_clouds(point_clouds: list[o3d.geometry.PointC
         - A Matplotlib colormap name (e.g., "viridis", "plasma", "afmhot"):
           Colors each point based on its Z-coordinate, normalized across the
           point cloud's height.
+        - A list of (N, 3) numpy arrays of RGB colors, where each array
+          corresponds to the colors for the points in the respective point cloud.
         - None: No coloring is applied.
         Defaults to None.
 
@@ -212,40 +214,49 @@ def assign_defined_colors_to_point_clouds(point_clouds: list[o3d.geometry.PointC
     cmap = plt.get_cmap("tab10")  # pastel1, pastel2, Accent
     unicolors = [cmap(j % 10) for j in range(num_pcs)]
     
-    for i, pc in enumerate(point_clouds):
-        if colors == "normal":
-            pc.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamKNN(knn=20))
-            # pc.orient_normals_consistent_tangent_plane(10)
-            # pc.orient_normals_to_align_with_direction([1, 0, 0])
-            normals = np.asarray(pc.normals)
+    if isinstance(colors, str):
+        colors = colors.lower()
+        for i, pc in enumerate(point_clouds):
+            if colors == "normal":
+                pc.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamKNN(knn=20))
+                # pc.orient_normals_consistent_tangent_plane(10)
+                # pc.orient_normals_to_align_with_direction([1, 0, 0])
+                normals = np.asarray(pc.normals)
 
-            ncolors = (normals + 1) / 2  # da [-1,1] a [0,1]
-            pc.colors = o3d.utility.Vector3dVector(ncolors)
+                ncolors = (normals + 1) / 2  # da [-1,1] a [0,1]
+                pc.colors = o3d.utility.Vector3dVector(ncolors)
 
-        elif colors == "betternormal":
-            ncolors, _, _, _ = color_points_from_closest_triangle_normal(pc)
-            pc.colors = o3d.utility.Vector3dVector(ncolors)
+            elif colors == "betternormal":
+                ncolors, _, _, _ = color_points_from_closest_triangle_normal(pc)
+                pc.colors = o3d.utility.Vector3dVector(ncolors)
 
-        elif colors == "uniform":
-            raw_color = unicolors[i % len(unicolors)]
-            rgb_color = np.asarray(mcolors.to_rgb(raw_color))
-            
-            pc.paint_uniform_color(rgb_color)
+            elif colors == "uniform":
+                raw_color = unicolors[i % len(unicolors)]
+                rgb_color = np.asarray(mcolors.to_rgb(raw_color))
+                
+                pc.paint_uniform_color(rgb_color)
 
-        else:
-            pts = np.asarray(pc.points)
-            z = pts[:, 2]
-
-            z_min = z.min()
-            z_max = z.max()
-
-            if z_max - z_min == 0:
-                z_norm = np.zeros_like(z)
             else:
-                z_norm = (z - z_min) / (z_max - z_min)
+                pts = np.asarray(pc.points)
+                z = pts[:, 2]
 
-            cmap = plt.get_cmap(colors)  # you can also try "turbo"
-            rgb = cmap(z_norm)[:, :3]
-            pc.colors = o3d.utility.Vector3dVector(rgb)
+                z_min = z.min()
+                z_max = z.max()
+
+                if z_max - z_min == 0:
+                    z_norm = np.zeros_like(z)
+                else:
+                    z_norm = (z - z_min) / (z_max - z_min)
+
+                cmap = plt.get_cmap(colors)  # you can also try "turbo"
+                rgb = cmap(z_norm)[:, :3]
+                pc.colors = o3d.utility.Vector3dVector(rgb)
+                
+    elif isinstance(colors, list):
+        if len(colors) != num_pcs:
+            raise ValueError("Length of colors list must match number of point clouds.")
+        
+        for pc, col in zip(point_clouds, colors):
+            pc.colors = o3d.utility.Vector3dVector(col)
         
     return point_clouds
