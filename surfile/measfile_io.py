@@ -44,7 +44,10 @@ except ImportError:
 def open_pc_from_dir(path: str, NM='remove', userScales=[1, 1, 1], downsample=1, resave={'resave': False, 'resample': 10}) -> np.ndarray:
 
     pc_list = []
-    for f in os.listdir(path):
+    paths = os.listdir(path)
+    # sort alphabetically the paths
+    paths.sort()
+    for f in paths:
         full_path = os.path.join(path, f)
 
         print(f)
