@@ -7,8 +7,8 @@ This script will:
 2. Load the point clouds using `measfile_io`.
 3. Run a series of tests on the visualization functions in `plotter.py`.
 """
-import sys
-sys.path.append("..\\") 
+import sys, os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
 import tkinter as tk
 from tkinter import filedialog
@@ -33,8 +33,7 @@ if __name__ == "__main__":
     root = tk.Tk()
     root.withdraw()  # Hide the main window
     folder_path = filedialog.askdirectory(
-        title="Select a Folder with Point Cloud Files (.txt, .npy, .stl)",
-        initialdir='G:\\Drive condivisi\\TIROCINI\\2026 - Aysu Oral\\'
+        title="Select a Folder with Point Cloud Files (.txt, .npy, .stl)"
     )
 
     if not folder_path:
@@ -43,7 +42,7 @@ if __name__ == "__main__":
 
     print(f"Loading point clouds from: {folder_path}")
     try:
-        point_clouds_np = fio.open_pc_from_dir(folder_path, downsample=20)
+        point_clouds_np = fio.open_pc_from_dir(folder_path, downsample=5)
         if not point_clouds_np:
             raise ValueError("No point clouds were loaded.")
         print(f"Successfully loaded {len(point_clouds_np)} point clouds.")

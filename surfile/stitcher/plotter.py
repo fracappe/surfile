@@ -6,6 +6,34 @@ import multiprocessing as mp
 
 import surfile.stitcher.utils as sutils
 
+
+def get_colors_from_weights(cmap_name, weights, log=False):
+    """
+    Map a set of weights to RGB colors using a specified Matplotlib colormap.
+
+    Parameters
+    ----------
+    cmap_name : str
+        The name of the Matplotlib colormap to use (e.g., "viridis", "plasma").
+    weights : np.ndarray
+        A 1D array of scalar values that will be mapped to colors. These should
+        be normalized to the range [0, 1] for best results.
+
+    Returns
+    -------
+    np.ndarray
+        An (N, 3) array of RGB colors corresponding to the input weights.
+    """    
+    if log:
+        weights = np.log(weights)  # log scaling to enhance contrast
+        
+    weights = np.asarray(weights)
+    weights = weights / np.max(weights) if np.max(weights) > 0 else weights
+    
+    cmap = plt.get_cmap(cmap_name)
+    colors = cmap(weights)[:, :3]  # Get RGB values, ignore alpha channel
+    return colors
+
 @sutils.ensure_o3d_pc
 def show_point_clouds(point_clouds: list[o3d.geometry.PointCloud], colors="normal"):
     """
@@ -257,6 +285,7 @@ def assign_defined_colors_to_point_clouds(point_clouds: list[o3d.geometry.PointC
             raise ValueError("Length of colors list must match number of point clouds.")
         
         for pc, col in zip(point_clouds, colors):
+            assert col.shape[0] == len(pc.points), "[WARNING COLORED] Color array length must match number of points in the point cloud."
             pc.colors = o3d.utility.Vector3dVector(col)
         
     return point_clouds

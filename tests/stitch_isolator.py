@@ -11,10 +11,9 @@ This script will:
 
 import tkinter as tk
 from tkinter import filedialog
-import os
 import numpy as np
 
-import sys
+import sys, os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
 import surfile.measfile_io as fio
