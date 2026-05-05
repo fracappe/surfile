@@ -43,7 +43,7 @@ if __name__ == "__main__":
 
     print(f"Loading point clouds from: {folder_path}")
     try:
-        point_clouds_np = fio.open_pc_from_file(folder_path, downsample=20)
+        point_clouds_np = fio.open_pc_from_dir(folder_path, downsample=20)
         if not point_clouds_np:
             raise ValueError("No point clouds were loaded.")
         print(f"Successfully loaded {len(point_clouds_np)} point clouds.")
