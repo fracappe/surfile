@@ -36,9 +36,25 @@ import numpy as np
 from scipy.spatial import KDTree
 
 from surfile.stitcher import stitcher as sstitcher
+from surfile.stitcher import plotter as splotter
 
 
 def make_compute_R(point_clouds_T):
+    """Create a function that computes the neighbourhood radius for deltas computation.
+    
+    Calculates the mean Z-offset between consecutive point clouds and returns
+    a callable that provides this radius value.
+    
+    Parameters
+    ----------
+    point_clouds_T : list[ndarray]
+        List of point clouds (transformed), where each element is an (N, 3) array.
+    
+    Returns
+    -------
+    callable
+        A function that returns the computed neighbourhood radius.
+    """
     R_vals = []
 
     for i in range(len(point_clouds_T) - 1):
@@ -57,9 +73,6 @@ def make_compute_R(point_clouds_T):
         return R_value
 
     return compute_R
-# ---------------------------------------------------------------------------
-# 1.  compute_deltas
-# ---------------------------------------------------------------------------
 
 def compute_deltas(
     stitched: np.ndarray,
@@ -91,7 +104,7 @@ def compute_deltas(
     deltas = np.empty((n, 3), dtype=float)
     R = float(compute_R())
     
-    print(f"Starting query_ball_point execution...")
+    print(f"Starting query_ball_point execution with radius {R}...")
     idx = tree.query_ball_point(stitched, r=R)
     
     for i, (point, neighbours) in enumerate(zip(stitched, idx)):    
@@ -106,32 +119,12 @@ def compute_deltas(
     print("\n")
     return deltas
 
-    # for i, point in enumerate(stitched):
-        
-    #     if i % 1000 == 0:
-    #         print(f"Computing deltas: {i}/{n} points processed...")
-
-    #     # query_ball_point returns indices of all points within radius R
-    #     idx = tree.query_ball_point(point, r=R)
-    #     neighbourhood = stitched[idx]          # always contains point itself
-    #     mean_vec = neighbourhood.mean(axis=0)
-    #     deltas[i] = point - mean_vec
-
-    # return deltas
-
-
-# ---------------------------------------------------------------------------
-# 2.  plot_stitching_comparison
-# ---------------------------------------------------------------------------
-
 _COMPONENT_LABELS = ("x", "y", "z")
 _COL_TITLES = ("|Δ|", "Δx", "Δy", "Δz")
-
 
 def _modulus(arr: np.ndarray) -> np.ndarray:
     """Row-wise L2 norm of an (N, 3) array → (N,)."""
     return np.linalg.norm(arr, axis=1)
-
 
 def _rmse_above_threshold(signal: np.ndarray, threshold: float) -> float | None:
     """RMSE of samples in *signal* whose absolute value exceeds *threshold*.
@@ -142,7 +135,6 @@ def _rmse_above_threshold(signal: np.ndarray, threshold: float) -> float | None:
     if not mask.any():
         return None
     return float(np.sqrt(np.mean(signal[mask] ** 2)))
-
 
 def _annotate_rmse(ax: plt.Axes, signal: np.ndarray, threshold: float) -> None:
     """Draw a horizontal threshold line and annotate the RMSE above it."""
@@ -158,7 +150,6 @@ def _annotate_rmse(ax: plt.Axes, signal: np.ndarray, threshold: float) -> None:
             fontsize=7.5,
             bbox=dict(boxstyle="round,pad=0.25", fc="white", alpha=0.7, ec="none"),
         )
-
 
 def _plot_row(
     axes: np.ndarray,          # shape (4,)
@@ -182,140 +173,140 @@ def _plot_row(
         ax.legend(fontsize=6, loc="upper left")
 
 
-def plot_stitching_comparison(
-    stitched_list: Sequence[np.ndarray],
-    compute_R: Callable[[np.ndarray], float],
-    noise_threshold: float,
-    labels: Sequence[str] | None = None,
-    figsize_scale: float = 5.0,
-) -> plt.Figure:
+class Comparator:
     """
-    Produce a comprehensive diagnostic figure for N stitching methods.
-
-    Layout
-    ------
-    • **Top block** – one row per method, four columns: |Δ|, Δx, Δy, Δz.
-    • **Bottom block** – one row per unique pair (i, j) with i < j, same
-      four columns but plotting ``deltas_i − deltas_j``.
-
-    Each subplot shows:
-      • the signal curve,
-      • a dashed horizontal line at ±*noise_threshold*,
-      • the RMSE computed only over samples whose |value| > noise_threshold.
-
-    Parameters
-    ----------
-    stitched_list : sequence of ndarray, each (N, 3)
-        One stitched surface per algorithm, **in the same point order**.
-    compute_R : callable
-        Passed directly to :func:`compute_deltas`.
-    noise_threshold : float
-        Values below this are considered noise-floor and excluded from RMSE.
-    labels : sequence of str, optional
-        Human-readable names for each method.  Defaults to "Method 0",
-        "Method 1", …
-    figsize_scale : float
-        Rough width/height per subplot in inches.  Default 5.
-
-    Returns
-    -------
-    fig : matplotlib.Figure
+    A class to encapsulate the comparison of stitching results.
     """
-    n_methods = len(stitched_list)
-    if labels is None:
-        labels = [f"Method {i}" for i in range(n_methods)]
+    def __init__(self, stitched_results: dict[str, tuple[np.ndarray, list[np.ndarray]]]):
+        """Initialize the Comparator with stitching results.
+        
+        Parameters
+        ----------
+        stitched_results : dict[str, tuple[ndarray, list[ndarray]]]
+            Dictionary mapping method names to tuples of (stitched_surface, point_clouds_T)
+            where stitched_surface is the final stitched point cloud and
+            point_clouds_T is the list of individual (transformed) point clouds.
+        """
+        self.stitched_results = stitched_results
+        self.deltas = {}
 
-    # --- compute all deltas up-front -----------------------------------
-    all_deltas = [compute_deltas(s, compute_R) for s in stitched_list]
+    def compute_all_deltas(self):
+        """Compute local-mean residuals for all stitching methods.
+        
+        Calculates deltas for each stitched result and stores them in self.deltas.
+        Must be called before plotting or colormapping.
+        """
+        for method_name, restuple in self.stitched_results.items():
+            stitched, stitched_T = restuple
+            cR = make_compute_R(stitched_T)
+            self.deltas[method_name] = compute_deltas(stitched, cR)
 
-    # --- pair-wise combinations ----------------------------------------
-    pairs = list(itertools.combinations(range(n_methods), 2))
-    n_rows = n_methods + len(pairs)
-    n_cols = 4
+    def plot_deltas(self, noise_threshold: float, labels: Sequence[str] | None = None, figsize_scale: float = 5.0) -> plt.Figure:
+        """Generate diagnostic comparison figure for stitching methods.
+        
+        Produces a figure with one row per stitching method and one row per
+        pair of methods, showing |Δ|, Δx, Δy, Δz with RMSE annotations.
+        
+        Parameters
+        ----------
+        noise_threshold : float
+            Threshold value for RMSE annotation of outliers.
+        labels : sequence[str], optional
+            Labels for each stitching method. If None, uses "Method 0", "Method 1", etc.
+        figsize_scale : float, optional
+            Scaling factor for figure size (default: 5.0).
+        
+        Returns
+        -------
+        Figure
+            The matplotlib figure object, or None if deltas haven't been computed.
+        """
+        if self.deltas == {}:
+            print("[WARN COMPARATOR] Deltas not computed yet. Run compute_all_deltas() first.")
+            return None
 
-    palette = plt.cm.tab10.colors  # up to 10 distinct colours
+        n_methods = len(self.stitched_results)
+        if labels is None:
+            labels = [f"Method {i}" for i in range(n_methods)]
 
-    fig = plt.figure(figsize=(figsize_scale * n_cols, figsize_scale * 0.8 * n_rows))
-    gs = gridspec.GridSpec(n_rows, n_cols, figure=fig,
-                           hspace=0.55, wspace=0.35)
+        # --- pair-wise combinations ----------------------------------------
+        pairs = list(itertools.combinations(range(n_methods), 2))
+        n_rows = n_methods + len(pairs)
+        n_cols = 4
 
-    # --- per-method rows -----------------------------------------------
-    for row_idx, (deltas, label) in enumerate(zip(all_deltas, labels)):
-        axes = np.array([fig.add_subplot(gs[row_idx, col]) for col in range(n_cols)])
-        color = palette[row_idx % len(palette)]
-        _plot_row(axes, deltas, noise_threshold, label, color)
+        palette = plt.cm.tab10.colors  # up to 10 distinct colours
 
-    # --- pair-wise difference rows -------------------------------------
-    for pair_idx, (i, j) in enumerate(pairs):
-        row_idx = n_methods + pair_idx
-        diff = all_deltas[i] - all_deltas[j]
-        pair_label = f"{labels[i]} − {labels[j]}"
-        axes = np.array([fig.add_subplot(gs[row_idx, col]) for col in range(n_cols)])
-        # Use a muted colour for difference rows
-        color = palette[(n_methods + pair_idx) % len(palette)]
-        _plot_row(axes, diff, noise_threshold, pair_label, color)
+        fig = plt.figure(figsize=(figsize_scale * n_cols, figsize_scale * 0.8 * n_rows))
+        gs = gridspec.GridSpec(n_rows, n_cols, figure=fig,
+                            hspace=0.55, wspace=0.35)
+        
+        deltas_all = list(self.deltas.values())
 
-    fig.suptitle(
-        "Stitching algorithm comparison\n"
-        f"(noise threshold = {noise_threshold:.3g})",
-        fontsize=11, y=1.01,
-    )
-    return fig
+        # --- per-method rows -----------------------------------------------
+        for row_idx, (deltas, label) in enumerate(zip(deltas_all, labels)):
+            axes = np.array([fig.add_subplot(gs[row_idx, col]) for col in range(n_cols)])
+            color = palette[row_idx % len(palette)]
+            _plot_row(axes, deltas, noise_threshold, label, color)
 
+        # --- pair-wise difference rows -------------------------------------
+        for pair_idx, (i, j) in enumerate(pairs):
+            row_idx = n_methods + pair_idx
+            diff = deltas_all[i] - deltas_all[j]
+            pair_label = f"{labels[i]} − {labels[j]}"
+            axes = np.array([fig.add_subplot(gs[row_idx, col]) for col in range(n_cols)])
+            # Use a muted colour for difference rows
+            color = palette[(n_methods + pair_idx) % len(palette)]
+            _plot_row(axes, diff, noise_threshold, pair_label, color)
 
-# ---------------------------------------------------------------------------
-# 3.  colorize_deltas
-# ---------------------------------------------------------------------------
+        fig.suptitle(
+            "Stitching algorithm comparison\n"
+            f"(noise threshold = {noise_threshold:.3g})",
+            fontsize=11, y=1.01,
+        )
+        return fig
 
-def colorize_deltas(
-    deltas: np.ndarray,
-    alpha: float = 1.0,
-    vmax: float | None = None,
-) -> np.ndarray:
-    """
-    Map the modulus of each delta to an RGBA colour via a green → red lerp.
+    def colormap_deltas(self, mode='modulus'):
+        """Visualize deltas using colormapped point clouds.
+        
+        Parameters
+        ----------
+        mode : str, optional
+            Coloring mode:
+            - 'modulus' (default): color by |Δ|
+            - 'x', 'y', 'z': color by component
+            - 'xyz': color by 3D RGB weights
+        """
+        if self.deltas == {}:
+            print("[WARN COMPARATOR] Deltas not computed yet. Run compute_all_deltas() first.")
+            return
 
-    The colour of point *i* is fully determined by ``|deltas[i]|`` relative
-    to the maximum modulus in the array (or *vmax* if supplied), so the
-    colour index is stable regardless of which subset of points you visualise.
+        make_plot = lambda factor: splotter.compare_point_clouds(
+            [[pc] for _, (pc, _) in self.stitched_results.items()],
+            [[splotter.get_colors_from_weights('plasma', factor(self.deltas[method]))] for method in self.stitched_results.keys()],
+        )
+        
+        if mode == 'modulus':
+            make_plot(lambda deltas: _modulus(deltas))
+        elif mode == 'x':
+            make_plot(lambda deltas: deltas[:, 0])
+        elif mode == 'y':
+            make_plot(lambda deltas: deltas[:, 1])
+        elif mode == 'z':
+            make_plot(lambda deltas: deltas[:, 2])
+        elif mode == 'xyz':
+            splotter.compare_point_clouds(
+                [[pc] for _, (pc, _) in self.stitched_results.items()],
+                [[splotter.get_rgb_from_3d_weights(self.deltas[method])] for method in self.stitched_results.keys()],
+            )
+        else:
+            print(f"[WARN COMPARATOR] Unknown colormap mode '{mode}'. Supported modes: 'modulus', 'x', 'y', 'z', 'xyz'.")
 
-    Parameters
-    ----------
-    deltas : ndarray, shape (N, 3)
-        Output of :func:`compute_deltas`.
-    alpha : float
-        Uniform opacity for all points (0–1).  Default 1.
-    vmax : float, optional
-        The modulus value that maps to pure red.  Defaults to the maximum
-        modulus found in *deltas*.
-
-    Returns
-    -------
-    colors : ndarray, shape (N, 4)  dtype float64, values in [0, 1]
-        RGBA colours – green (0, 1, 0, α) at modulus 0,
-        red  (1, 0, 0, α) at modulus *vmax*.
-
-    Notes
-    -----
-    The array index of each colour matches the array index of the
-    corresponding point in *stitched* / *deltas*, which is guaranteed to be
-    unchanged throughout the stitching pipeline.
-    """
-    deltas = np.asarray(deltas, dtype=float)
-    mod = _modulus(deltas)                     # (N,)
-
-    if vmax is None:
-        vmax = mod.max()
-
-    # Normalise to [0, 1], guard against all-zero case
-    t = mod / vmax if vmax > 0 else np.zeros_like(mod)
-    t = np.clip(t, 0.0, 1.0)
-
-    # Lerp: green (0,1,0) → red (1,0,0)
-    # R channel: 0 → 1,  G channel: 1 → 0,  B channel: 0 → 0
-    r = t
-    g = 1.0 - t
-    b = np.zeros_like(t)
-    a = np.full_like(t, float(alpha))
-
-    return np.stack([r, g, b, a], axis=1)      # (N, 4)
+    def plot(self, cmap="plasma"):
+        """Plot all stitched point clouds side-by-side for visual comparison.
+        
+        Parameters
+        ----------
+        cmap : str, optional
+            Colormap name for point cloud visualization (default: "plasma").
+        """
+        splotter.compare_point_clouds([[pc] for _, (pc, _) in self.stitched_results.items()], cmap)

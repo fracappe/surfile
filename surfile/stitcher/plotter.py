@@ -34,6 +34,34 @@ def get_colors_from_weights(cmap_name, weights, log=False):
     colors = cmap(weights)[:, :3]  # Get RGB values, ignore alpha channel
     return colors
 
+def get_rgb_from_3d_weights(weights: np.ndarray):
+    """
+    Map 3D weights to RGB colors by normalizing each dimension and using it as
+    a color channel.
+
+    Parameters
+    ----------
+    weights : np.ndarray
+        An (N, 3) array of scalar weights for each point, where each column
+        corresponds to a different dimension of weighting.
+
+    Returns
+    -------
+    np.ndarray
+        An (N, 3) array of RGB colors derived from the input weights.
+    """
+    if weights.shape[1] != 3:
+        raise ValueError("Input weights must have shape (N, 3) for RGB mapping.")
+    
+    # Normalize each column to [0, 1]
+    norm_weights = np.zeros_like(weights)
+    for i in range(3):
+        col = np.abs(weights[:, i])
+        norm_weights[:, i] = col / np.max(weights) if np.max(weights) > 0 else col
+    
+    rgb = norm_weights  # Directly use normalized weights as RGB values
+    return rgb
+
 @sutils.ensure_o3d_pc
 def show_point_clouds(point_clouds: list[o3d.geometry.PointCloud], colors="normal"):
     """
@@ -55,7 +83,7 @@ def show_point_clouds(point_clouds: list[o3d.geometry.PointCloud], colors="norma
     o3d.visualization.draw_geometries(point_clouds, point_show_normal=False)
 
 @sutils.ensure_o3d_pc
-def compare_point_clouds(pc_lists: list[list[o3d.geometry.PointCloud]], colors: str | list[str]="normal"):
+def compare_point_clouds(pc_lists: list[list[o3d.geometry.PointCloud]], colors="normal"):
     """
     Compare multiple lists of point clouds, each in a separate window.
 
@@ -75,7 +103,7 @@ def compare_point_clouds(pc_lists: list[list[o3d.geometry.PointCloud]], colors: 
     """
     procs = []
     if type(colors) == str: colors = [colors for _ in range(len(pc_lists))]
-    print(f"[INFO COMPARE PLOT] Plotting comparisons in multiple processes with colors: {colors}")
+    print(f"[INFO COMPARE PLOT] Plotting comparisons in multiple processes")
 
     for i, pc_list in enumerate(pc_lists):
         p = mp.Process(target=show_point_clouds, args=(pc_list, colors[i]))

@@ -55,23 +55,26 @@ def get_user_method_choice(methods):
         except (ValueError, IndexError):
             print("❌ Invalid input. Please enter valid numbers from the list.")
             
-def apply_stitch_sequence(bplt=True):
-    root = tk.Tk()
-    root.withdraw()  # Hide the main Tkinter window
+def apply_stitch_sequence(downsample=1, bplt=True, folder=None) -> list:
+    if folder is None:
+        root = tk.Tk()
+        root.withdraw()  # Hide the main Tkinter window
 
-    folder_path = filedialog.askdirectory(
-        title="Select a Folder with Point Cloud Files", 
-        initialdir="G:\\Drive condivisi\\TIROCINI\\2026 - Aysu Oral\\figures"
-    )
-    if not folder_path:
-        print("No folder selected. Exiting.")
-        exit()
+        folder_path = filedialog.askdirectory(
+            title="Select a Folder with Point Cloud Files", 
+            initialdir="G:\\Drive condivisi\\TIROCINI\\2026 - Aysu Oral\\figures"
+        )
+        if not folder_path:
+            print("No folder selected. Exiting.")
+            exit()
+    else:
+        folder_path = folder
 
     # --- 2. Load Point Clouds ---
     print(f"📂 Loading point clouds from: {folder_path}")
     try:
         # Using a downsample factor to speed up tests, adjust if needed.
-        point_clouds = fio.open_pc_from_dir(folder_path, downsample=5)
+        point_clouds = fio.open_pc_from_dir(folder_path, downsample=downsample)
         if not point_clouds or len(point_clouds) < 2:
             raise ValueError(
                 "Could not load at least two point clouds for stitching."
@@ -133,6 +136,8 @@ def apply_stitch_sequence(bplt=True):
     # Initialize the working set of point clouds with the original data
     current_point_clouds = point_clouds
 
+    stitching_results = {}
+
     for method_name in selected_methods:
         print("\n" + "="*60)
         print(f"🚀 Running test for: {method_name}")
@@ -181,6 +186,8 @@ def apply_stitch_sequence(bplt=True):
                 else:
                     # Pass the base save_folder; the specific stitch method will create its own subfolder.
                     stitched_cloud, transformed_clouds = stitching_function(current_point_clouds, save_folder)
+
+            stitching_results[method_name] = (stitched_cloud, transformed_clouds)
                     
             # The output of this step becomes the input for the next iteration
             current_point_clouds = transformed_clouds
@@ -190,7 +197,7 @@ def apply_stitch_sequence(bplt=True):
             print(f"❌ An error occurred during '{method_name}': {e}")
 
     print("\n🎉 All selected stitching methods completed!")
-    return current_point_clouds
+    return stitching_results
     
 if __name__ == "__main__":
     # --- 1. Setup Tkinter and get folder path ---
