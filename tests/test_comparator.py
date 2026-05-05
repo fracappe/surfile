@@ -81,7 +81,7 @@ def run_stitching_comparison():
     print(f"📂 Loading point clouds from: {folder_path}")
     try:
         # Using a downsample factor to speed up tests, adjust if needed.
-        point_clouds = fio.open_pc_from_file(folder_path, downsample=5)
+        point_clouds = fio.open_pc_from_dir(folder_path, downsample=5)
         if not point_clouds or len(point_clouds) < 2:
             raise ValueError(
                 "Could not load at least two point clouds for stitching."
@@ -236,8 +236,9 @@ def run_stitching_comparison():
     labels = list(stitching_results.keys())
 
     # Define a radius function for compute_deltas
-    def compute_R(point):
-        return 0.3
+    compute_R = scomparator.make_compute_R(current_point_clouds) 
+
+    print(compute_R())
 
     # Set noise threshold
     noise_threshold = 0.1

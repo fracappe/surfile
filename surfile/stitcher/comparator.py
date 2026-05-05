@@ -45,15 +45,15 @@ def make_compute_R(point_clouds_T):
         fixed_pts = point_clouds_T[i]
         aligned = point_clouds_T[i + 1]
 
-        fix_sub, temp_sub = sstitcher.SurfaceStitcher.isolate_common_points_kdtree(fixed_pts, aligned, bins_after_max=1, bplt=False)
+        fix_sub, temp_sub = sstitcher.Isolator.isolate_common_points_kdtree(fixed_pts, aligned, bins_after_max=1, bplt=False)
 
-        R = np.nanmean(fix_sub[:, 2]) - np.nanmean(temp_sub[:, 2])
-        R_vals.append(R)
+        R = np.nanmean(fix_sub) - np.nanmean(temp_sub)
+        R_vals.append(abs(R))
 
     R_value = np.mean(R_vals)
 
     # return the function expected by compute_deltas
-    def compute_R(_point):
+    def compute_R():
         return R_value
 
     return compute_R
@@ -89,16 +89,35 @@ def compute_deltas(
     tree = KDTree(stitched)
 
     deltas = np.empty((n, 3), dtype=float)
-    for i, point in enumerate(stitched):
-        R = float(compute_R(point))
+    R = float(compute_R())
     
-        # query_ball_point returns indices of all points within radius R
-        idx = tree.query_ball_point(point, r=R)
-        neighbourhood = stitched[idx]          # always contains point itself
+    print(f"Starting query_ball_point execution...")
+    idx = tree.query_ball_point(stitched, r=R)
+    
+    for i, (point, neighbours) in enumerate(zip(stitched, idx)):    
+        
+        if i % 1000 == 0:
+            print(f"Computing deltas: {i}/{n} points processed...", end="\r")
+        
+        neighbourhood = stitched[neighbours]          # always contains point itself
         mean_vec = neighbourhood.mean(axis=0)
         deltas[i] = point - mean_vec
 
+    print("\n")
     return deltas
+
+    # for i, point in enumerate(stitched):
+        
+    #     if i % 1000 == 0:
+    #         print(f"Computing deltas: {i}/{n} points processed...")
+
+    #     # query_ball_point returns indices of all points within radius R
+    #     idx = tree.query_ball_point(point, r=R)
+    #     neighbourhood = stitched[idx]          # always contains point itself
+    #     mean_vec = neighbourhood.mean(axis=0)
+    #     deltas[i] = point - mean_vec
+
+    # return deltas
 
 
 # ---------------------------------------------------------------------------
