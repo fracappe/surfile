@@ -454,17 +454,13 @@ class Isolator():
         """Helper function to visualize the distance-based isolation."""
         dist_f2m, _ = cKDTree(moving_pts).query(fixed_pts, k=1)
         dist_m2f, _ = cKDTree(fixed_pts).query(moving_pts, k=1)
-        
-        if log:
-            dist_f2m = np.log(dist_f2m)
-            dist_m2f = np.log(dist_m2f)
-        
-        fixed_colors = cmap(dist_f2m / np.max(dist_f2m))[:, :3]
-        moving_colors = cmap(dist_m2f / np.max(dist_m2f))[:, :3]
+
+        fixed_colors = splotter.get_colors_from_weights(cmap, dist_f2m, log=log)
+        moving_colors = splotter.get_colors_from_weights(cmap, dist_m2f, log=log)
         splotter.show_point_clouds([fixed_pts, moving_pts], colors=[fixed_colors, moving_colors])
 
     @staticmethod
-    def plot_isolated_areas(fixed_subset, moving_subset, fixed_pts, moving_pts): 
+    def plot_isolated_areas(fixed_subset, moving_subset, fixed_pts, moving_pts):
         """Helper function to visualize the isolated point cloud subsets."""
         splotter.show_point_clouds([fixed_subset, moving_subset], colors='uniform')
 
