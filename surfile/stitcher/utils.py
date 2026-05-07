@@ -1,11 +1,12 @@
+from datetime import datetime
+
 import open3d as o3d
 import numpy as np
 from scipy import ndimage
 
+import os, pickle
 from functools import wraps
 from surfile import surface
-
-from scipy.spatial import cKDTree
 
 def to_numpy(item):
     """
@@ -452,3 +453,71 @@ def merge_and_downsample_point_cloud(pc1: np.ndarray, pc2: np.ndarray, voxel_siz
     pc_down = pc.voxel_down_sample(voxel_size=voxel_size)
     return np.asarray(pc_down.points)
 
+from surfile.stitcher import stitcher
+import inspect
+
+class PipelineStep:
+    f: callable
+    t: list
+    
+    def __init__(self, f, **kwargs):
+        self.f = f
+        self.kwargs = kwargs
+        self.t = []
+        print(f'[INFO PIPELINE] Created step with function {f.__name__} and parameters: {kwargs}')
+        self._check_arguments()
+    
+    def _check_arguments(self):
+        """
+        Check if the provided arguments match the function's signature.
+        If kwargs has parameters that are not in the function signature gives a warning and continues
+        """
+        if not callable(self.f):
+            raise ValueError(f"The provided function {self.f} is not callable.")
+        
+        signature = inspect.signature(self.f)
+        for param in signature.parameters.values():
+            if param.name == 'point_clouds':
+                continue  # This is the expected input argument for stitching functions
+            if param.name not in self.kwargs and param.default is param.empty:
+                raise ValueError(f"Missing required argument '{param.name}' for function '{self.f.__name__}'")
+            
+        for kwarg in self.kwargs:
+            if kwarg not in signature.parameters:
+                print(f'[WARN PIPELINE] Argument "{kwarg}" is not in the signature of function "{self.f.__name__}". It will be ignored.')
+    
+    def run(self, pcs):
+        return self.f(pcs, **self.kwargs)
+
+
+class Pipeline:
+    name: str
+    steps: list[PipelineStep]
+    
+    def __init__(self, steps: list[PipelineStep], name: str = 'auto'):
+        self.name = name
+        if name == 'auto':
+            self.name = '_'.join([step.f.__name__ for step in steps]).replace('stitch', '')
+            print(f'[INFO PIPELINE] Auto-generated pipeline name: {self.name}')
+        
+        self.steps = steps
+        
+    def run(self, pcs, save_transforms=None):
+        # init global transforms as identity matrices for each pc
+        global_transforms = np.array([np.eye(4) for _ in pcs])
+        
+        current_pcs = pcs
+        for step in self.steps:
+            _, current_pcs, current_transforms = step.run(current_pcs)
+            global_transforms = [T_local @ T for T, T_local in zip(global_transforms, current_transforms)]
+            
+        if save_transforms is not None:
+            # add date and time to the folder name to avoid overwriting previous runs
+            save_folder = os.path.join(save_transforms, 'pipelines', self.name + '_' + datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
+            
+            os.makedirs(save_folder, exist_ok=True)
+            for i in range(len(global_transforms)):
+                with open(os.path.join(save_folder, f"{i}.pkl"), "wb") as f:
+                    pickle.dump(global_transforms[i], f)
+            
+        return current_pcs

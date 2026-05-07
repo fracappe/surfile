@@ -76,7 +76,8 @@ def run_stitching_comparison(stitching_results):
 
     comparator = scomparator.Comparator(stitching_results)
     comparator.compute_all_deltas()
-    # fig = comparator.plot_deltas(noise_threshold=0.01, labels=list(stitching_results.keys()), figsize_scale=4.0)
+    fig = comparator.plot_deltas(noise_threshold=0.01, labels=list(stitching_results.keys()), figsize_scale=4.0)
+    fig = comparator.plot_histograms(noise_threshold=0.01, labels=list(stitching_results.keys()), figsize_scale=4.0)
     comparator.colormap_deltas(mode='xyz')
 
     # Save the comparison figure
@@ -91,6 +92,6 @@ def run_stitching_comparison(stitching_results):
 
 if __name__ == "__main__":
     from stitch_stitcher import apply_stitch_sequence
-    stitching_results = apply_stitch_sequence(folder='G:\\Drive condivisi\\TIROCINI\\2026 - Aysu Oral\\figures\\tooth', downsample=3, bplt=False)
+    stitching_results = apply_stitch_sequence(folder='G:\\Drive condivisi\\TIROCINI\\2026 - Aysu Oral\\figures\\blender_ale\\ideal', downsample=3, bplt=False)
 
     run_stitching_comparison(stitching_results)

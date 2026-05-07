@@ -861,12 +861,18 @@ class SurfaceStitcher:
             Files should be named like '0.pkl', '1.pkl', etc.
         bplt : bool, optional
             If True, visualize the results. Defaults to True.
+
+        Returns
+        -------
+        fixed : np.ndarray
+            The merged/stitched point cloud.
+        point_clouds_T : list[np.ndarray]
+            List of transformed point clouds.
+        transforms_matrices : list[np.ndarray]
+            List of 4x4 transformation matrices applied to each point cloud.
         """
 
         transforms_folder = Path(transforms_folder)
-
-        fixed = np.asarray(point_clouds[0])
-        point_clouds_T = [point_clouds[0]]
 
         transform_files = sorted(
             transforms_folder.glob("*.pkl"),
@@ -889,27 +895,23 @@ class SurfaceStitcher:
                 else:
                     raise TypeError(f"Unexpected type in pickle file: {type(loaded_obj)}. Expected TransformParams or 4x4 np.ndarray.")
 
-        # The first point cloud is the reference, no transform applied to it.
-        # The loop starts from the second point cloud (index 1).
-        for i, pc in enumerate(point_clouds[1:]): # i will be 0 for point_clouds[1], 1 for point_clouds[2], etc.
+        point_clouds_T = []
+        for i, pc in enumerate(point_clouds):
             moving = np.asarray(pc)
 
-            # Apply the i-th loaded transform (which corresponds to point_clouds[i+1])
             moved = apply_transform(moving, loaded_transforms_params[i])
             point_clouds_T.append(moved)
 
-            fixed = np.vstack([fixed, moved])
+        fixed = np.vstack(point_clouds_T)
 
         if bplt:
-            # show_point_clouds([fixed], colors="uniform")
-            # show_point_clouds(point_clouds_T, colors="normal")
             splotter.compare_point_clouds([[fixed], point_clouds_T], ["normal", "uniform"])
 
         return fixed, point_clouds_T
 
     @staticmethod
     @sutils.ensure_numpy_pcd
-    def stitchManual(point_clouds: list[np.ndarray], points_in_sphere=100,  bplt=False, save_transform=None):
+    def stitchManual(point_clouds: list[np.ndarray], points_in_sphere=100,  bplt=False):
         """
         Stitch point clouds using manual correspondence selection.
 
@@ -929,8 +931,15 @@ class SurfaceStitcher:
             inaccuracy. Defaults to 100.
         bplt : bool, optional
             If True, visualize the results. Defaults to False.
-        save_transform : str or None, optional
-            If provided, path to a folder to save the computed transformations.
+
+        Returns
+        -------
+        fixed : np.ndarray
+            The merged/stitched point cloud.
+        point_clouds_T : list[np.ndarray]
+            List of transformed point clouds.
+        transforms_matrices : list[np.ndarray]
+            List of 4x4 transformation matrices applied to each point cloud.
         """
 
         def get_n_closest_points(pcd, center):
@@ -976,24 +985,21 @@ class SurfaceStitcher:
             mp = np.vstack(moving_patches)
 
             RTM: TransformParams = TransformParams.from_kabsch(mp, fp)
-            if save_transform is not None:
-                save_folder = os.path.join(save_transform, "man")
-                
-                os.makedirs(save_folder, exist_ok=True)
-                RTM.to_pickle(os.path.join(save_folder, f"{i}.pkl"))
-
+            
             moved = apply_transform(moving, RTM)
 
             # apply transformatıon
-            return moved
+            return moved, RTM
 
         fixed = np.asarray(point_clouds[0])
         point_clouds_T = [point_clouds[0]]
+        transforms_matrices = [np.eye(4)]  # Identity matrix for the first cloud
 
         for i, pc in enumerate(point_clouds[1:]):
             moving = np.asarray(pc)
-            moved = optimize(fixed, moving)
+            moved, RTM = optimize(fixed, moving)
             point_clouds_T.append(moved)
+            transforms_matrices.append(RTM.get_matrix())
 
             fixed = np.vstack([fixed, moved])
 
@@ -1001,11 +1007,11 @@ class SurfaceStitcher:
             splotter.show_point_clouds([fixed], colors=None)
             splotter.show_point_clouds(point_clouds_T, colors=None)
 
-        return fixed, point_clouds_T
+        return fixed, point_clouds_T, transforms_matrices
 
     @staticmethod
     @sutils.ensure_numpy_pcd
-    def stitchRobot(point_clouds: list[np.ndarray], robotTfile, save_transform=None, bplt=False):
+    def stitchRobot(point_clouds: list[np.ndarray], robotTfile, bplt=False):
         """
         Stitch point clouds using transformation data from a robot's kinematics.
 
@@ -1019,10 +1025,17 @@ class SurfaceStitcher:
             List of point clouds to stitch.
         robotTfile : str
             Path to the file containing robot transformation data.
-        save_transform : str or None, optional
-            If provided, path to a folder to save the transformations.
         bplt : bool, optional
             If True, visualize the results. Defaults to False.
+
+        Returns
+        -------
+        fixed : np.ndarray
+            The merged/stitched point cloud.
+        point_clouds_T : list[np.ndarray]
+            List of transformed point clouds.
+        transforms_matrices : list[np.ndarray]
+            List of 4x4 transformation matrices applied to each point cloud.
         """
         robot_trans = []
         point_clouds_clean = []
@@ -1033,32 +1046,33 @@ class SurfaceStitcher:
 
             tr = TransformParams.from_file(robotTfile, i, header=1)
             tr.rescale(1000)
-            if save_transform is not None:
-                save_folder = os.path.join(save_transform, "rob")
-                
-                os.makedirs(save_folder, exist_ok=True)
-                tr.to_pickle(os.path.join(save_folder, f"{i}.pkl"))
             
             robot_trans.append(tr)
 
         print(f"[INFO ROBOT STITCH] Loaded {len(robot_trans)} robot transformations for {len(point_clouds_clean)} surfaces")
 
         point_clouds_T = []
+        transforms_matrices = []
         fixed = point_clouds_clean[0]
         for pc, trasf in zip(point_clouds_clean, robot_trans):
             pts = pc
             pts_T = apply_transform(pts, trasf, params0=robot_trans[0])
             point_clouds_T.append(pts_T)
             fixed = sutils.merge_and_downsample_point_cloud(fixed, pts_T)  # TODO: check why we downsaple
+            
+            # Extract transformation matrix (adjusted with params0)
+            T0_inv = np.linalg.inv(robot_trans[0].get_matrix())
+            T_matrix = T0_inv @ trasf.get_matrix()
+            transforms_matrices.append(T_matrix)
 
         if bplt:
             splotter.compare_point_clouds([[fixed], point_clouds_T], ["afmhot", "uniform"])
 
-        return fixed, point_clouds_T
+        return fixed, point_clouds_T, transforms_matrices
 
     @staticmethod
     @sutils.ensure_numpy_pcd
-    def stitchRMSE(point_clouds: list[np.ndarray], n_calls, isolator: Isolator, save_transform=None, bplt=False):
+    def stitchRMSE(point_clouds: list[np.ndarray], n_calls, isolator: Isolator, bplt=False):
         """
         Stitch point clouds by minimizing RMSE using Bayesian optimization.
 
@@ -1077,10 +1091,17 @@ class SurfaceStitcher:
         isolator : Isolator
             An `Isolator` instance to define the overlapping region where RMSE
             is calculated.
-        save_transform : str or None, optional
-            If provided, path to a folder to save the computed transformations.
         bplt : bool,optional
             If True, visualize the results and the optimization progress.
+
+        Returns
+        -------
+        fixed : np.ndarray
+            The merged/stitched point cloud.
+        point_clouds_T : list[np.ndarray]
+            List of transformed point clouds.
+        transforms_matrices : list[np.ndarray]
+            List of 4x4 transformation matrices applied to each point cloud.
         """
         def optimize(fixed_pts, moving_pts):
             U_tx, U_ty, U_tz = 56, 56, 56
@@ -1116,11 +1137,6 @@ class SurfaceStitcher:
 
             best = res.x
             best_p = TransformParams.from_list(best)
-            if save_transform is not None:
-                save_folder = os.path.join(save_transform, "rmse")
-                
-                os.makedirs(save_folder, exist_ok=True)
-                best_p.to_pickle(os.path.join(save_folder, f"{i}.pkl"))
 
             aligned = apply_transform(moving_pts, best_p)
 
@@ -1128,6 +1144,7 @@ class SurfaceStitcher:
 
         fixed = np.asarray(point_clouds[0])
         point_clouds_T = [point_clouds[0]]
+        transforms_matrices = [np.eye(4)]  # Identity matrix for the first cloud
 
         for i, pc in enumerate(point_clouds[1:]):
             rmses = []
@@ -1135,8 +1152,12 @@ class SurfaceStitcher:
 
             moving = np.asarray(pc)
             print(f'[INFO RMSE] Optimizing image {i}')
-            optimized_moving, _ = optimize(fixed, moving)
+            optimized_moving, res = optimize(fixed, moving)
             point_clouds_T.append(optimized_moving)
+            
+            # Extract transformation matrix from best parameters
+            best_p = TransformParams.from_list(res.x)
+            transforms_matrices.append(best_p.get_matrix())
 
             fixed = np.vstack([fixed, optimized_moving])
 
@@ -1157,11 +1178,11 @@ class SurfaceStitcher:
         if bplt:
             splotter.compare_point_clouds([[fixed], point_clouds_T], ["viridis", "uniform"])
 
-        return fixed, point_clouds_T
+        return fixed, point_clouds_T, transforms_matrices
 
     @staticmethod
     @sutils.ensure_numpy_pcd
-    def stitchICP(point_clouds: list[np.ndarray], thresholder: Thresholder, isolator: None | Isolator, save_transform, bplt=False):
+    def stitchICP(point_clouds: list[np.ndarray], thresholder: Thresholder, isolator: None | Isolator, bplt=False):
         """
         Stitch point clouds using the Iterative Closest Point (ICP) algorithm.
 
@@ -1177,10 +1198,17 @@ class SurfaceStitcher:
         isolator : Isolator or None
             An `Isolator` instance to select the overlapping region. If None,
             the entire point clouds are used.
-        save_transform : str or None
-            If provided, path to a folder to save the computed transformations.
         bplt : bool, optional
             If True, visualize the results. Defaults to False.
+
+        Returns
+        -------
+        fixed : np.ndarray
+            The merged/stitched point cloud.
+        point_clouds_T : list[np.ndarray]
+            List of transformed point clouds.
+        transforms_matrices : list[np.ndarray]
+            List of 4x4 transformation matrices applied to each point cloud.
         """
         def optimize(fixed_pts, moving_pts):
 
@@ -1201,38 +1229,33 @@ class SurfaceStitcher:
                 o3d.pipelines.registration.TransformationEstimationPointToPoint(),
                 o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=1000))
 
-            if save_transform is not None:
-                save_folder = os.path.join(save_transform, "icp")
-                
-                os.makedirs(save_folder, exist_ok=True)
-                with open(os.path.join(save_folder, f"{i}.pkl"), "wb") as f:
-                    pickle.dump(reg_p2p.transformation, f)
-
             aligned = apply_transform(moving_pts, reg_p2p.transformation)
 
             return aligned, reg_p2p
         
         fixed = np.asarray(point_clouds[0])
         point_clouds_T = [point_clouds[0]]
+        transforms_matrices = [np.eye(4)]  # Identity matrix for the first cloud
 
         for i, pc in enumerate(point_clouds[1:]):
             moving = np.asarray(pc)
 
             print(f"[INFO ICP] Optimizing image {i}")
 
-            optimized_moving, _ = optimize(fixed, moving)
+            optimized_moving, reg_p2p = optimize(fixed, moving)
             point_clouds_T.append(optimized_moving)
+            transforms_matrices.append(reg_p2p.transformation)
 
             fixed = np.vstack([fixed, optimized_moving])
 
         if bplt:
             splotter.compare_point_clouds([[fixed], point_clouds_T], ["viridis", "uniform"])
 
-        return fixed, point_clouds_T
+        return fixed, point_clouds_T, transforms_matrices
 
     @staticmethod
     @sutils.ensure_numpy_pcd
-    def stitchFGR(point_clouds: list[np.ndarray], voxel_size: float, thresholder: Thresholder, isolator: None | Isolator, save_transform, bplt=False):
+    def stitchFGR(point_clouds: list[np.ndarray], voxel_size: float, thresholder: Thresholder, isolator: None | Isolator, bplt=False):
         """
         Stitch point clouds using Fast Global Registration (FGR).
 
@@ -1252,10 +1275,17 @@ class SurfaceStitcher:
             A `Thresholder` instance to determine the correspondence distance.
         isolator : Isolator or None
             An `Isolator` instance to select the overlapping region.
-        save_transform : str or None
-            If provided, path to a folder to save the computed transformations.
         bplt : bool, optional
             If True, visualize the results. Defaults to False.
+
+        Returns
+        -------
+        fixed : np.ndarray
+            The merged/stitched point cloud.
+        point_clouds_T : list[np.ndarray]
+            List of transformed point clouds.
+        transforms_matrices : list[np.ndarray]
+            List of 4x4 transformation matrices applied to each point cloud.
         """
         def optimize(fixed_pts, moving_pts):
             [fixed_scaled, moving_scaled], scales = sutils.rescale_point_cloud([fixed_pts, moving_pts])
@@ -1302,13 +1332,6 @@ class SurfaceStitcher:
                 )
             )
 
-            if save_transform is not None:
-                save_folder = os.path.join(save_transform, "fgr")
-                
-                os.makedirs(save_folder, exist_ok=True)
-                with open(os.path.join(save_folder, f"{i}.pkl"), "wb") as f:
-                    pickle.dump(reg_fgr.transformation, f)
-
             aligned_scaled = apply_transform(moving_scaled, reg_fgr.transformation)
 
             [aligned], _ = sutils.rescale_point_cloud(
@@ -1317,26 +1340,28 @@ class SurfaceStitcher:
                 revert=True
             )
 
-            return aligned
+            return aligned, reg_fgr.transformation
 
         fixed = np.asarray(point_clouds[0])
         point_clouds_T = [point_clouds[0]]
+        transforms_matrices = [np.eye(4)]  # Identity matrix for the first cloud
 
         for i, pc in enumerate(point_clouds[1:]):
             moving = np.asarray(pc)
             print(f"[INFO FGR] Optimizing image {i}")
-            optimized_moving = optimize(fixed, moving)
+            optimized_moving, T_matrix = optimize(fixed, moving)
             point_clouds_T.append(optimized_moving)
+            transforms_matrices.append(T_matrix)
             fixed = np.vstack([fixed, optimized_moving])
 
         if bplt:
             splotter.compare_point_clouds([[fixed], point_clouds_T], ["viridis", "uniform"])
 
-        return fixed, point_clouds_T
+        return fixed, point_clouds_T, transforms_matrices
 
     @staticmethod
     @sutils.ensure_numpy_pcd
-    def stitchCorrelation(point_clouds: list[np.ndarray], dx: float, dy: float, isolator: None | Isolator, correlateDer=True, save_transform=None, bplt=False):
+    def stitchCorrelation(point_clouds: list[np.ndarray], dx: float, dy: float, isolator: None | Isolator, correlateDer=True, bplt=False):
         """
         Stitch point clouds using 2D phase cross-correlation.
 
@@ -1358,10 +1383,17 @@ class SurfaceStitcher:
         correlateDer : bool, optional
             If True, perform correlation on the derivative of the surfaces,
             which can make the algorithm more robust to height differences.
-        save_transform : str or None
-            If provided, path to a folder to save the computed transformations.
         bplt : bool, optional
             If True, visualize the results. Defaults to False.
+
+        Returns
+        -------
+        fixed : np.ndarray
+            The merged/stitched point cloud.
+        point_clouds_T : list[np.ndarray]
+            List of transformed point clouds.
+        transforms_matrices : list[np.ndarray]
+            List of 4x4 transformation matrices applied to each point cloud.
         """
         def optimize(fixed_pts, moving_pts):
 
@@ -1427,12 +1459,7 @@ class SurfaceStitcher:
             aligned[:, 2] += tz
 
             tr = TransformParams.from_numbers(tx, ty, tz, 0, 0, 0)
-            if save_transform is not None:
-                save_folder = os.path.join(save_transform, "cc")
-                
-                os.makedirs(save_folder, exist_ok=True)
-                tr.to_pickle(os.path.join(save_folder, f"{i}.pkl"))
-
+            
             print(f"before mean z = {np.mean(moving_pts[:, 2])}")
             print(f"after mean z  = {np.mean(aligned[:, 2])}")
 
@@ -1467,19 +1494,22 @@ class SurfaceStitcher:
 
             #     plt.show()
 
-            return aligned, [tx, ty]
+            return aligned, tr
 
         fixed = np.asarray(point_clouds[0])
         point_clouds_T = [point_clouds[0]]
+        transforms_matrices = [np.eye(4)]  # Identity matrix for the first cloud
 
         for i, pc in enumerate(point_clouds[1:]):
             moving = np.asarray(pc)
             print(f"[INFO COR] Optimizing image {i}")
-            optimized_moving, _ = optimize(fixed, moving)
+            optimized_moving, tr = optimize(fixed, moving)
             point_clouds_T.append(optimized_moving)
+            transforms_matrices.append(tr.get_matrix())
             fixed = np.vstack([fixed, optimized_moving])
 
         if bplt:
             splotter.compare_point_clouds([[fixed], point_clouds_T], ["viridis", "uniform"])
 
-        return fixed, point_clouds_T
+        return fixed, point_clouds_T, transforms_matrices
+    

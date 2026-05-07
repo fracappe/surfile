@@ -30,6 +30,7 @@ from __future__ import annotations
 import itertools
 from typing import Callable, Sequence
 
+from tqdm import tqdm
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import numpy as np
@@ -104,14 +105,10 @@ def compute_deltas(
     deltas = np.empty((n, 3), dtype=float)
     R = float(compute_R())
     
-    print(f"Starting query_ball_point execution with radius {R}...")
-    idx = tree.query_ball_point(stitched, r=R)
+    print(f"Starting KDTree query_ball_point execution with radius {R}...")
+    idx = tree.query_ball_point(stitched, r=R) # This operation can be slow for large point clouds
     
-    for i, (point, neighbours) in enumerate(zip(stitched, idx)):    
-        
-        if i % 1000 == 0:
-            print(f"Computing deltas: {i}/{n} points processed...", end="\r")
-        
+    for i, (point, neighbours) in tqdm(enumerate(zip(stitched, idx)), total=n, desc="Computing deltas", colour='cyan'):            
         neighbourhood = stitched[neighbours]          # always contains point itself
         mean_vec = neighbourhood.mean(axis=0)
         deltas[i] = point - mean_vec
@@ -158,13 +155,14 @@ def _plot_row(
     row_label: str,
     color: str,
 ) -> None:
-    """Fill one row of four subplots for a given *deltas* array."""
+    """Fill one row of four subplots for a given *deltas* array."""    
     x = np.arange(len(deltas))
     mod = _modulus(deltas)
 
     signals = [mod, deltas[:, 0], deltas[:, 1], deltas[:, 2]]
 
     for ax, sig, col_title in zip(axes, signals, _COL_TITLES):
+        # sig[abs(sig) > threshold] = np.nan # zero out values below threshold for better visualization
         ax.plot(x, sig, lw=0.8, color=color, alpha=0.85)
         ax.set_title(f"{row_label}  —  {col_title}", fontsize=8, pad=3)
         ax.set_xlabel("point index", fontsize=7)
@@ -172,6 +170,81 @@ def _plot_row(
         _annotate_rmse(ax, sig, threshold)
         ax.legend(fontsize=6, loc="upper left")
 
+def _plot_hist_row(
+    axes: np.ndarray,          # shape (4,)
+    deltas: np.ndarray,        # (N, 3)
+    threshold: float,
+    row_label: str,
+    color: str,
+) -> None:
+    """Fill one row of four subplots for a given *deltas* array."""
+    mod = _modulus(deltas)
+
+    signals = [mod, deltas[:, 0], deltas[:, 1], deltas[:, 2]]
+
+    for ax, sig, col_title in zip(axes, signals, _COL_TITLES):
+        ax.hist(sig, bins='rice', color=color, alpha=0.85)
+        ax.set_title(f"{row_label}  —  {col_title}", fontsize=8, pad=3)
+        ax.set_xlabel("value", fontsize=7)
+        ax.tick_params(labelsize=7)
+        _annotate_rmse(ax, sig, threshold)
+        ax.legend(fontsize=6, loc="upper right")
+
+def _plot_comparison_figure(
+    stitched_results: dict,
+    deltas: dict,
+    plot_function: Callable,
+    title_prefix: str,
+    noise_threshold: float,
+    labels: Sequence[str] | None = None,
+    figsize_scale: float = 5.0
+) -> plt.Figure:
+    """
+    Generic helper to generate a comparison figure for stitching methods.
+    This function contains the common logic for plot_deltas and plot_histograms.
+    """
+    if not deltas:
+        print("[WARN COMPARATOR] Deltas not computed yet. Run compute_all_deltas() first.")
+        return None
+
+    n_methods = len(stitched_results)
+    if labels is None:
+        labels = [f"Method {i}" for i in range(n_methods)]
+
+    # --- pair-wise combinations ----------------------------------------
+    pairs = list(itertools.combinations(range(n_methods), 2))
+    n_rows = n_methods + len(pairs)
+    n_cols = 4
+
+    palette = plt.cm.tab10.colors  # up to 10 distinct colours
+
+    fig = plt.figure(figsize=(figsize_scale * n_cols, figsize_scale * 0.8 * n_rows))
+    gs = gridspec.GridSpec(n_rows, n_cols, figure=fig, hspace=0.55, wspace=0.35)
+    
+    deltas_all = list(deltas.values())
+
+    # --- per-method rows -----------------------------------------------
+    for row_idx, (delta_data, label) in enumerate(zip(deltas_all, labels)):
+        axes = np.array([fig.add_subplot(gs[row_idx, col]) for col in range(n_cols)])
+        color = palette[row_idx % len(palette)]
+        plot_function(axes, delta_data, noise_threshold, label, color)
+
+    # --- pair-wise difference rows -------------------------------------
+    for pair_idx, (i, j) in enumerate(pairs):
+        row_idx = n_methods + pair_idx
+        diff = deltas_all[i] - deltas_all[j]
+        pair_label = f"{labels[i]} − {labels[j]}"
+        axes = np.array([fig.add_subplot(gs[row_idx, col]) for col in range(n_cols)])
+        color = palette[(n_methods + pair_idx) % len(palette)]
+        plot_function(axes, diff, noise_threshold, pair_label, color)
+
+    fig.suptitle(
+        f"{title_prefix}\n"
+        f"(noise threshold = {noise_threshold:.3g})",
+        fontsize=11, y=1.01,
+    )
+    return fig
+    
 
 class Comparator:
     """
@@ -221,49 +294,30 @@ class Comparator:
         Figure
             The matplotlib figure object, or None if deltas haven't been computed.
         """
-        if self.deltas == {}:
-            print("[WARN COMPARATOR] Deltas not computed yet. Run compute_all_deltas() first.")
-            return None
-
-        n_methods = len(self.stitched_results)
-        if labels is None:
-            labels = [f"Method {i}" for i in range(n_methods)]
-
-        # --- pair-wise combinations ----------------------------------------
-        pairs = list(itertools.combinations(range(n_methods), 2))
-        n_rows = n_methods + len(pairs)
-        n_cols = 4
-
-        palette = plt.cm.tab10.colors  # up to 10 distinct colours
-
-        fig = plt.figure(figsize=(figsize_scale * n_cols, figsize_scale * 0.8 * n_rows))
-        gs = gridspec.GridSpec(n_rows, n_cols, figure=fig,
-                            hspace=0.55, wspace=0.35)
-        
-        deltas_all = list(self.deltas.values())
-
-        # --- per-method rows -----------------------------------------------
-        for row_idx, (deltas, label) in enumerate(zip(deltas_all, labels)):
-            axes = np.array([fig.add_subplot(gs[row_idx, col]) for col in range(n_cols)])
-            color = palette[row_idx % len(palette)]
-            _plot_row(axes, deltas, noise_threshold, label, color)
-
-        # --- pair-wise difference rows -------------------------------------
-        for pair_idx, (i, j) in enumerate(pairs):
-            row_idx = n_methods + pair_idx
-            diff = deltas_all[i] - deltas_all[j]
-            pair_label = f"{labels[i]} − {labels[j]}"
-            axes = np.array([fig.add_subplot(gs[row_idx, col]) for col in range(n_cols)])
-            # Use a muted colour for difference rows
-            color = palette[(n_methods + pair_idx) % len(palette)]
-            _plot_row(axes, diff, noise_threshold, pair_label, color)
-
-        fig.suptitle(
-            "Stitching algorithm comparison\n"
-            f"(noise threshold = {noise_threshold:.3g})",
-            fontsize=11, y=1.01,
+        return _plot_comparison_figure(
+            self.stitched_results,
+            self.deltas,
+            _plot_row,
+            "Stitching algorithm comparison",
+            noise_threshold,
+            labels,
+            figsize_scale
         )
-        return fig
+    
+    def plot_histograms(self, noise_threshold: float, labels: Sequence[str] | None = None, figsize_scale: float = 5.0) -> plt.Figure:
+        """Generate histogram comparison figure for stitching methods.
+        
+        Similar to plot_deltas but uses histograms instead of line plots.
+        """
+        return _plot_comparison_figure(
+            self.stitched_results,
+            self.deltas,
+            _plot_hist_row,
+            "Stitching algorithm comparison (histograms)",
+            noise_threshold,
+            labels,
+            figsize_scale
+        )
 
     def colormap_deltas(self, mode='modulus'):
         """Visualize deltas using colormapped point clouds.
