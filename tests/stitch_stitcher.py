@@ -201,4 +201,4 @@ def apply_stitch_sequence(downsample=1, bplt=True, folder=None) -> list:
     
 if __name__ == "__main__":
     # --- 1. Setup Tkinter and get folder path ---
-    apply_stitch_sequence()
+    apply_stitch_sequence(folder = "G:\\Drive condivisi\\TIROCINI\\2026 - Aysu Oral\\figures\\blender_ale\\ideal")

@@ -1194,6 +1194,9 @@ class SurfaceStitcher:
 
             trans_init = np.eye(4)
             threshold = thresholder.apply_thresholder(fixed_subset, moving_subset)
+            if threshold == 0:
+                print("[WARNING ICP] Threshold is 0, setting to 1 to avoid errors")
+                threshold = 1
             print(f'{threshold=}')
 
             reg_p2p = o3d.pipelines.registration.registration_icp(
