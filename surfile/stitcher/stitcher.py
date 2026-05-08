@@ -848,7 +848,7 @@ class SurfaceStitcher:
     """
     @staticmethod
     @sutils.ensure_numpy_pcd
-    def stitchSavedTransforms(point_clouds: list[np.ndarray], transforms_folder, bplt=True):
+    def stitchSavedTransforms(point_clouds: list[np.ndarray], transforms_folder, bplt=False):
         """
         Stitch point clouds by applying pre-computed, saved transformations.
 
@@ -1004,8 +1004,7 @@ class SurfaceStitcher:
             fixed = np.vstack([fixed, moved])
 
         if bplt:
-            splotter.show_point_clouds([fixed], colors=None)
-            splotter.show_point_clouds(point_clouds_T, colors=None)
+            splotter.compare_point_clouds([[fixed], point_clouds_T], ["afmhot", "uniform"])
 
         return fixed, point_clouds_T, transforms_matrices
 

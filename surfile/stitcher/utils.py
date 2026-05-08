@@ -453,19 +453,26 @@ def merge_and_downsample_point_cloud(pc1: np.ndarray, pc2: np.ndarray, voxel_siz
     pc_down = pc.voxel_down_sample(voxel_size=voxel_size)
     return np.asarray(pc_down.points)
 
-from surfile.stitcher import stitcher
+from surfile.stitcher import stitcher as sst
 import inspect
 
 class PipelineStep:
     f: callable
     t: list
     
-    def __init__(self, f, **kwargs):
+    def __init__(self, f, name=None, **kwargs):
         self.f = f
+        self.name = name
         self.kwargs = kwargs
         self.t = []
-        print(f'[INFO PIPELINE] Created step with function {f.__name__} and parameters: {kwargs}')
-        self._check_arguments()
+        self.children = []
+        print(f'[INFO PIPELINE] Created step with function {f.__name__}')
+        
+    def add_child(self, step):
+        if not isinstance(step, PipelineStep):
+            raise ValueError("Il figlio deve essere un'istanza di PipelineStep")
+        self.children.append(step)
+        return step
     
     def _check_arguments(self):
         """
@@ -485,39 +492,95 @@ class PipelineStep:
         for kwarg in self.kwargs:
             if kwarg not in signature.parameters:
                 print(f'[WARN PIPELINE] Argument "{kwarg}" is not in the signature of function "{self.f.__name__}". It will be ignored.')
+                
+    def _check_all_leaves_have_name(self):
+        if not self.children:
+            if not self.name:
+                raise ValueError("All leaf nodes must have a name for saving results.")
+        else:
+            for child in self.children:
+                child._check_all_leaves_have_name()
     
-    def run(self, pcs):
-        return self.f(pcs, **self.kwargs)
+    def run(self, pcs, current_transforms, base_save_path=None):
+        self._check_arguments()
+        self._check_all_leaves_have_name()
+        
+        _, next_pcs, local_transforms = self.f(pcs, **self.kwargs)
+        
+        new_global_transforms = [T_local @ T for T, T_local in zip(current_transforms, local_transforms)]
+        
+        if not self.children and base_save_path is not None:
+            self._save(new_global_transforms, base_save_path, self.name)
+        else:
+            for child in self.children:
+                child.run(next_pcs, new_global_transforms, base_save_path)
+
+    def _save(self, transforms, base_path, leaf_path_name):
+        save_folder = os.path.join(base_path, leaf_path_name)
+            
+        os.makedirs(save_folder, exist_ok=False)
+        print(f"[INFO PIPELINE] Saving leaf results to: {leaf_path_name}")
+        for i, T in enumerate(transforms):
+            with open(os.path.join(save_folder, f"{i}.pkl"), "wb") as f:
+                pickle.dump(T, f)
 
 
-class Pipeline:
-    name: str
-    steps: list[PipelineStep]
-    
-    def __init__(self, steps: list[PipelineStep], name: str = 'auto'):
+class TreePipeline:
+    def __init__(self, root_steps: list[PipelineStep], name: str):
         self.name = name
-        if name == 'auto':
-            self.name = '_'.join([step.f.__name__ for step in steps]).replace('stitch', '')
-            print(f'[INFO PIPELINE] Auto-generated pipeline name: {self.name}')
+        self.root_steps = root_steps
+        self.timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+    def run(self, pcs, save_transforms_root):
+        base_save_path = os.path.join(
+            save_transforms_root, 
+            'pipelines', 
+            f"{self.name}_{self.timestamp}"
+        )
         
-        self.steps = steps
+        past_runs = self._check_for_past_runs(save_transforms_root)
+        print(f'[INFO PIPELINE] Found {len(past_runs)} past runs for pipeline "{self.name}".')
+        if past_runs:
+            choice = self._prompt_user_for_run_choice(past_runs)
+            if choice is None: #make a new run
+                print(f'[INFO PIPELINE] Running new pipeline: {self.name}')
+            else: #apply existing
+                print(f'[INFO PIPELINE] Applying past pipeline results from: {choice}')
+                self._run_past_pipeline(pcs, os.path.join(save_transforms_root, 'pipelines', choice))
+                return
         
-    def run(self, pcs, save_transforms=None):
-        # init global transforms as identity matrices for each pc
-        global_transforms = np.array([np.eye(4) for _ in pcs])
+        # Inizializza trasformazioni identità
+        initial_transforms = [np.eye(4) for _ in pcs]
         
-        current_pcs = pcs
-        for step in self.steps:
-            _, current_pcs, current_transforms = step.run(current_pcs)
-            global_transforms = [T_local @ T for T, T_local in zip(global_transforms, current_transforms)]
+        print(f'[INFO PIPELINE] Starting Tree Pipeline: {self.name}')
+        
+        for root in self.root_steps:
+            root.run(pcs, initial_transforms, base_save_path)
             
-        if save_transforms is not None:
-            # add date and time to the folder name to avoid overwriting previous runs
-            save_folder = os.path.join(save_transforms, 'pipelines', self.name + '_' + datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
+    def _check_for_past_runs(self, save_transforms_root):        
+        past_runs = []
+        if not os.path.exists(os.path.join(save_transforms_root, 'pipelines')): 
+            return past_runs
+        for subdir in os.listdir(os.path.join(save_transforms_root, 'pipelines')):
+            if self.name in subdir:
+                past_runs.append(subdir)
+                
+        return past_runs
+    
+    def _prompt_user_for_run_choice(self, past_runs):
+        print(f"Found {len(past_runs)} past runs for pipeline '{self.name}':")
+        for i, run in enumerate(past_runs):
+            print(f"{i}: {run}")
+        print(f"{len(past_runs)}: Run new pipeline")
+        
+        while True:
+            choice = input(f"Select a past run to apply or run new pipeline (0-{len(past_runs)}): ")
+            if choice.isdigit():
+                choice_idx = int(choice)
+                if 0 <= choice_idx <= len(past_runs):
+                    return past_runs[choice_idx] if choice_idx < len(past_runs) else None
+            print("Invalid input. Please enter a number corresponding to the options above.")
             
-            os.makedirs(save_folder, exist_ok=True)
-            for i in range(len(global_transforms)):
-                with open(os.path.join(save_folder, f"{i}.pkl"), "wb") as f:
-                    pickle.dump(global_transforms[i], f)
-            
-        return current_pcs
+    def _run_past_pipeline(self, pcs, past_run_folder):
+        for subdir in os.listdir(past_run_folder):
+            sst.SurfaceStitcher.stitchSavedTransforms(pcs, os.path.join(past_run_folder, subdir), bplt=True)

@@ -41,7 +41,7 @@ except ImportError:
 
 
 ############## point cloud file management ############
-def open_pc_from_dir(path: str, NM='remove', userScales=[1, 1, 1], downsample=1, resave={'resave': False, 'resample': 10}) -> np.ndarray:
+def open_pc_from_dir(path: str, NM='remove', userscales=[1, 1, 1], downsample=1, resave={'resave': False, 'resample': 10}) -> np.ndarray:
 
     pc_list = []
     paths = os.listdir(path)
@@ -81,9 +81,9 @@ def open_pc_from_dir(path: str, NM='remove', userScales=[1, 1, 1], downsample=1,
             elif NM == 'keep': pass
             elif NM == 'fill': pc[:, 2][np.isnan(pc[:, 2])] = np.nanmean(pc[:, 2])
 
-            pc[:, 0]  *= userScales[0]
-            pc[:, 1]  *= userScales[1]
-            pc[:, 2]  *= userScales[2]
+            pc[:, 0]  *= userscales[0]
+            pc[:, 1]  *= userscales[1]
+            pc[:, 2]  *= userscales[2]
 
             pc = pc[::downsample]
 
