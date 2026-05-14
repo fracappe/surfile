@@ -63,7 +63,7 @@ def get_rgb_from_3d_weights(weights: np.ndarray):
     return rgb
 
 @sutils.ensure_o3d_pc
-def show_point_clouds(point_clouds: list[o3d.geometry.PointCloud], colors="normal"):
+def show_point_clouds(point_clouds: list[o3d.geometry.PointCloud], colors="normal", name="Point Cloud"):
     """
     Visualize a list of point clouds in a single Open3D window.
 
@@ -80,10 +80,10 @@ def show_point_clouds(point_clouds: list[o3d.geometry.PointCloud], colors="norma
     """
     if colors is not None:
         point_clouds = assign_defined_colors_to_point_clouds(point_clouds, colors=colors)
-    o3d.visualization.draw_geometries(point_clouds, point_show_normal=False)
+    o3d.visualization.draw_geometries(point_clouds, point_show_normal=False, window_name=name)
 
 @sutils.ensure_o3d_pc
-def compare_point_clouds(pc_lists: list[list[o3d.geometry.PointCloud]], colors="normal"):
+def compare_point_clouds(pc_lists: list[list[o3d.geometry.PointCloud]], colors="normal", names: None | list[str] = None):
     """
     Compare multiple lists of point clouds, each in a separate window.
 
@@ -99,16 +99,18 @@ def compare_point_clouds(pc_lists: list[list[o3d.geometry.PointCloud]], colors="
         The coloring scheme(s) to apply. If a single string, the same scheme
         is applied to all windows. If a list of strings, each window gets
         the corresponding color scheme from the list. Defaults to "normal".
-
+    names : None | list[str], optional
+        A list of names for the visualization windows. If None, default names
+        will be used. Defaults to None.
     """
     procs = []
     if type(colors) == str: colors = [colors for _ in range(len(pc_lists))]
     print(f"[INFO COMPARE PLOT] Plotting comparisons in multiple processes")
 
     for i, pc_list in enumerate(pc_lists):
-        p = mp.Process(target=show_point_clouds, args=(pc_list, colors[i]))
+        p = mp.Process(target=show_point_clouds, args=(pc_list, colors[i], names[i] if names else f"Window {i}"))
         p.start()
-
+    
         procs.append(p)
     
     for p in procs: p.join()

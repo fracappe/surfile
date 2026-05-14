@@ -501,20 +501,19 @@ class PipelineStep:
             for child in self.children:
                 child._check_all_leaves_have_name()
     
-    def run(self, pcs, current_transforms, base_save_path=None):
+    def run(self, pcs, current_transforms, base_save_path=None, bplt_override=False) -> None:
         self._check_arguments()
         self._check_all_leaves_have_name()
-        
+        if bplt_override: self.kwargs['bplt'] = bplt_override
         fixed, next_pcs, local_transforms = self.f(pcs, **self.kwargs)
         
         new_global_transforms = [T_local @ T for T, T_local in zip(current_transforms, local_transforms)]
-        
+
         if not self.children and base_save_path is not None:
             self._save(new_global_transforms, base_save_path, self.name)
-            return self.name, fixed, next_pcs
         else:
             for child in self.children:
-                return child.run(next_pcs, new_global_transforms, base_save_path)
+                child.run(next_pcs, new_global_transforms, base_save_path)
 
     def _save(self, transforms, base_path, leaf_path_name):
         save_folder = os.path.join(base_path, leaf_path_name)
@@ -525,6 +524,12 @@ class PipelineStep:
             with open(os.path.join(save_folder, f"{i}.pkl"), "wb") as f:
                 pickle.dump(T, f)
 
+    @classmethod
+    def pass_through(cls, name): # it must return the same shape as the stitcher functions, so that it can be used as a PipelineStep function: fixed, point_clouds_T, transforms_matrices
+        def f(point_clouds: list[np.ndarray]):
+            fixed = np.vstack(point_clouds)
+            return fixed, point_clouds, [np.eye(4) for _ in point_clouds]
+        return cls(f, name=name)
 
 class TreePipeline:
     def __init__(self, root_steps: list[PipelineStep], name: str):
@@ -532,7 +537,7 @@ class TreePipeline:
         self.root_steps = root_steps
         self.timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-    def run(self, pcs, save_transforms_root):
+    def run(self, pcs, save_transforms_root, bplt=True):
         # prepare result dict[str, tuple[np.ndarray, list[np.ndarray]]]
         stitching_results = {}
 
@@ -546,23 +551,19 @@ class TreePipeline:
         print(f'[INFO PIPELINE] Found {len(past_runs)} past runs for pipeline "{self.name}".')
         if past_runs:
             choice = self._prompt_user_for_run_choice(past_runs)
-            if choice is None: #make a new run
-                print(f'[INFO PIPELINE] Running new pipeline: {self.name}')
+            if choice is None: # make a new run
+                pass
+
             else: # apply existing
                 print(f'[INFO PIPELINE] Applying past pipeline results from: {choice}')
-                stitching_results = self._run_past_pipeline(pcs, os.path.join(save_transforms_root, 'pipelines', choice))
+                stitching_results = self._run_past_pipeline(pcs, os.path.join(save_transforms_root, 'pipelines', choice), bplt=bplt)
                 return stitching_results
-        
-        # Inizializza trasformazioni identità
-        initial_transforms = [np.eye(4) for _ in pcs]
-        
-        print(f'[INFO PIPELINE] Starting Tree Pipeline: {self.name}')
-        
-        for root in self.root_steps:
-            leaf_name, fixed, next_pcs = root.run(pcs, initial_transforms, base_save_path)
-            stitching_results[leaf_name] = (fixed, next_pcs)
 
-        return stitching_results
+        initial_transforms = [np.eye(4) for _ in pcs]
+        print(f'[INFO PIPELINE] Starting new Tree Pipeline: {self.name}')
+        for root in self.root_steps:
+            root.run(pcs, initial_transforms, base_save_path, bplt_override=bplt)
+            return stitching_results
             
     def _check_for_past_runs(self, save_transforms_root):        
         past_runs = []
@@ -588,10 +589,11 @@ class TreePipeline:
                     return past_runs[choice_idx] if choice_idx < len(past_runs) else None
             print("Invalid input. Please enter a number corresponding to the options above.")
             
-    def _run_past_pipeline(self, pcs, past_run_folder):
+    def _run_past_pipeline(self, pcs, past_run_folder, bplt=False):
         stitching_results = {}
 
         for subdir in os.listdir(past_run_folder):
-            fixed, next_pcs = sst.SurfaceStitcher.stitchSavedTransforms(pcs, os.path.join(past_run_folder, subdir), bplt=True)
+            fixed, next_pcs = sst.SurfaceStitcher.stitchSavedTransforms(pcs, os.path.join(past_run_folder, subdir), bplt=bplt)
             stitching_results[subdir] = (fixed, next_pcs)
         return stitching_results
+    

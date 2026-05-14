@@ -74,7 +74,7 @@ def run_stitching_comparison(stitching_results):
     print("📊 Comparing stitching results using comparator...")
     print("="*60)
 
-    comparator = scomparator.Comparator(stitching_results)
+    comparator = scomparator.BallQuery(stitching_results)
     comparator.compute_all_deltas()
     fig = comparator.plot_deltas(noise_threshold=0.01, labels=list(stitching_results.keys()), figsize_scale=4.0)
     fig = comparator.plot_histograms(noise_threshold=0.01, labels=list(stitching_results.keys()), figsize_scale=4.0)

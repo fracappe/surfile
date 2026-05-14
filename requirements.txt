@@ -6,3 +6,6 @@ scipy
 scikit-optimize
 scikit-image
 tqdm
+igor
+circle_fit 
+alive_progress

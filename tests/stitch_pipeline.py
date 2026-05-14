@@ -6,6 +6,7 @@ from surfile.stitcher import utils as sutils
 from surfile import measfile_io as fio
 
 import numpy as np
+import matplotlib.pyplot as plt
 import pickle
 
 import tkinter as tk
@@ -46,13 +47,26 @@ step_man = sutils.PipelineStep(sst.SurfaceStitcher.stitchManual, bplt=True)
 step_icp_ch = sutils.PipelineStep(sst.SurfaceStitcher.stitchICP, name="icp_ch", thresholder=sst.Thresholder(type='KDTree'), isolator=sst.Isolator(type='convex_hull'), bplt=True)
 step_icp_mm = sutils.PipelineStep(sst.SurfaceStitcher.stitchICP, name="icp_mm", thresholder=sst.Thresholder(type='KDTree'), isolator=sst.Isolator(type='maxmin', axes='xy'), bplt=True)
 
+step_man.add_child(sutils.PipelineStep.pass_through(name="pt_manual"))
 step_man.add_child(step_icp_ch)
 step_man.add_child(step_icp_mm)
 
-pipe = sutils.TreePipeline(root_steps=[step_man], name="man_icp_pipe")
+pipe = sutils.TreePipeline(root_steps=[step_man], name="manpt_icp_pipe")
 
 if __name__ == "__main__":
     
-    pcs, folder_path = open_files(folder='G:\\Drive condivisi\\TIROCINI\\2026 - Aysu Oral\\figures\\tooth', downsample=2, userscales=[1, 1, 1])
+    pcs, folder_path = open_files(folder='G:\\Drive condivisi\\TIROCINI\\2026 - Aysu Oral\\figures\\tooth', downsample=10, userscales=[1, 1, 1])
 
-    pipe.run(pcs, folder_path)
+    stitching_results = pipe.run(pcs, folder_path, bplt=False)
+    
+    from surfile.stitcher import comparator
+    bqcomp = comparator.BallQuery(stitching_results)
+    dmpcomp = comparator.DensityMapPosterior(stitching_results)
+
+    bqcomp.compute_all_deltas()
+    # comp.colormap_deltas('xyz')
+    # bqcomp.plot_histograms(noise_threshold=0.1)
+
+    dmpcomp.compute_all_dmp_errors()
+
+    plt.show()

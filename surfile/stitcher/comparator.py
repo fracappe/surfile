@@ -3,7 +3,7 @@ comparator.py
 ==============
 Utilities for evaluating and comparing N point-cloud stitching algorithms.
 
-Public API
+BallQuery
 ----------
 compute_deltas(stitched, compute_R)
     For every point in a stitched surface, find the local neighbourhood
@@ -23,6 +23,19 @@ colorize_deltas(deltas)
     Return an (N, 4) RGBA array that maps the modulus of every delta to a
     green→red gradient (0 → max), suitable for colouring a point cloud
     scatter or a matplotlib scatter plot.
+-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-
+
+Dense Map Posterior (DMP) method for evaluating stitching quality.
+----------
+compute_dmp_error(point_clouds_T)
+    For each point cloud, compute the squared distance to the nearest point
+    in the combined point cloud of all other point clouds, then sum these
+    errors across all point clouds.
+
+class DensityMapPosterior
+    Main class to evaluate stitching results using the Dense Map Posterior
+    method. Computes alignment quality by measuring distances between
+    individual point clouds and the rest of the stitched surface.
 """
 
 from __future__ import annotations
@@ -30,6 +43,7 @@ from __future__ import annotations
 import itertools
 from typing import Callable, Sequence
 
+import scipy
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
@@ -246,7 +260,7 @@ def _plot_comparison_figure(
     return fig
     
 
-class Comparator:
+class BallQuery:
     """
     A class to encapsulate the comparison of stitching results.
     """
@@ -273,6 +287,29 @@ class Comparator:
             stitched, stitched_T = restuple
             cR = make_compute_R(stitched_T)
             self.deltas[method_name] = compute_deltas(stitched, cR)
+        self._print_summary()
+
+    def _print_summary(self):
+        """
+        Print a summary of delta statistics for all methods.
+        For each method, prints the scipy stats describe of |Δ|, Δx, Δy, Δz in a pretty format.
+        """
+        print("\n" + "=" * 70)
+        print("Ball Query Statistics Summary")
+        print("=" * 70)
+        for method_name, delta_data in self.deltas.items():
+            mod = _modulus(delta_data)
+            stats_mod = scipy.stats.describe(mod, nan_policy='omit')
+            stats_x = scipy.stats.describe(delta_data[:, 0], nan_policy='omit')
+            stats_y = scipy.stats.describe(delta_data[:, 1], nan_policy='omit')
+            stats_z = scipy.stats.describe(delta_data[:, 2], nan_policy='omit')
+
+            print(f"\nMethod: {method_name}")
+            print(f"{'Component':>10s} | {'Count':>10s} | {'Mean':>12s} | {'StdDev':>12s} | {'Min':>12s} | {'Max':>12s}")
+            print("-" * 120)
+            for comp_label, stats in zip(_COL_TITLES, [stats_mod, stats_x, stats_y, stats_z]):
+                count, (minn, maxx), mean, stddev, skew, kurt = stats
+                print(f"{comp_label:>10s} | {count:10d} | {mean:12.6g} | {stddev:12.6g} | {minn:12.6g} | {maxx:12.6g}")
 
     def plot_deltas(self, noise_threshold: float, labels: Sequence[str] | None = None, figsize_scale: float = 5.0) -> plt.Figure:
         """Generate diagnostic comparison figure for stitching methods.
@@ -309,6 +346,7 @@ class Comparator:
         
         Similar to plot_deltas but uses histograms instead of line plots.
         """
+        if labels is None: labels = list(self.stitched_results.keys())
         return _plot_comparison_figure(
             self.stitched_results,
             self.deltas,
@@ -337,6 +375,7 @@ class Comparator:
         make_plot = lambda factor: splotter.compare_point_clouds(
             [[pc] for _, (pc, _) in self.stitched_results.items()],
             [[splotter.get_colors_from_weights('plasma', factor(self.deltas[method]))] for method in self.stitched_results.keys()],
+            names=[f"{method} - {mode}" for method in self.stitched_results.keys()]
         )
         
         if mode == 'modulus':
@@ -351,6 +390,7 @@ class Comparator:
             splotter.compare_point_clouds(
                 [[pc] for _, (pc, _) in self.stitched_results.items()],
                 [[splotter.get_rgb_from_3d_weights(self.deltas[method])] for method in self.stitched_results.keys()],
+                names=[f"{method} - XYZ" for method in self.stitched_results.keys()]
             )
         else:
             print(f"[WARN COMPARATOR] Unknown colormap mode '{mode}'. Supported modes: 'modulus', 'x', 'y', 'z', 'xyz'.")
@@ -364,3 +404,178 @@ class Comparator:
             Colormap name for point cloud visualization (default: "plasma").
         """
         splotter.compare_point_clouds([[pc] for _, (pc, _) in self.stitched_results.items()], cmap)
+
+
+def compute_dmp_error(point_clouds_T: list[np.ndarray]) -> dict[str, float]:
+    """
+    Compute the Dense Map Posterior (DMP) error for a list of transformed point clouds.
+    
+    The DMP method evaluates stitching quality by:
+    1. For each point cloud i, finding nearest neighbours in all other point clouds
+    2. Computing squared distances to these nearest neighbours
+    3. Summing squared distances per point cloud
+    4. Summing all point cloud errors to get total error
+    
+    Parameters
+    ----------
+    point_clouds_T : list[ndarray]
+        List of transformed point clouds, where each element is an (N, 3) array.
+    
+    Returns
+    -------
+    dict[str, float]
+        Dictionary containing:
+        - 'total_error': Sum of all errors across all point clouds
+        - 'per_cloud_errors': List of errors for each point cloud
+        - 'mean_error_per_cloud': Mean error per point cloud
+    """
+    point_clouds_T = [np.asarray(pc, dtype=float) for pc in point_clouds_T]
+    n_clouds = len(point_clouds_T)
+    
+    if n_clouds < 2:
+        raise ValueError("At least 2 point clouds are required for DMP evaluation")
+    
+    mean_total_error = 0.0
+    squared_total_error = 0.0
+    per_cloud_mean_errors = []
+    per_cloud_squared_errors = []
+    
+    # For each point cloud
+    for i in range(n_clouds):
+        current_cloud = point_clouds_T[i]
+        
+        # Combine all other point clouds
+        other_clouds = np.vstack([point_clouds_T[j] for j in range(n_clouds) if j != i])
+        
+        # Build KDTree for efficient nearest neighbour search
+        tree = KDTree(other_clouds)
+        
+        # Find nearest neighbour distances for each point in current cloud
+        distances, _ = tree.query(current_cloud, k=1)
+        
+        # Average of errors for this point cloud
+        mean_error = np.mean(distances)
+        per_cloud_mean_errors.append(mean_error)
+        mean_total_error += mean_error
+
+        # Squared sum of errors of distances
+        squared_error = np.sqrt(np.sum(distances ** 2))
+        per_cloud_squared_errors.append(squared_error)
+        squared_total_error += squared_error
+
+        print(f"Point cloud {i}: error = {mean_error:.6f}, mean distance = {mean_error:.6f}, squared error = {squared_error:.6f}")
+    
+    mean_error_per_cloud = np.mean(per_cloud_mean_errors)
+    squared_error_per_cloud = np.mean(per_cloud_squared_errors)
+    
+    print(f"\nTotal DMP error: {mean_total_error / n_clouds:.6f}")
+    print(f"Mean error per cloud: {mean_error_per_cloud:.6f}")
+    print(f"Squared error per cloud: {squared_error_per_cloud:.6f}")
+    
+    return {
+        'total_error': float(mean_total_error / n_clouds),
+        'per_cloud_errors': per_cloud_mean_errors,
+        'per_cloud_squared_errors': per_cloud_squared_errors,
+        'mean_error_per_cloud': float(mean_error_per_cloud),
+        'squared_error_per_cloud': float(squared_error_per_cloud),
+    }
+
+
+class DensityMapPosterior:
+    """
+    A class to evaluate stitching quality using the Dense Map Posterior method.
+    """
+    def __init__(self, stitched_results: dict[str, tuple[np.ndarray, list[np.ndarray]]]):
+        """
+        Initialize the DensityMapPosterior evaluator with stitching results.
+        
+        Parameters
+        ----------
+        stitched_results : dict[str, tuple[ndarray, list[ndarray]]]
+            Dictionary mapping method names to tuples of (stitched_surface, point_clouds_T)
+            where stitched_surface is the final stitched point cloud and
+            point_clouds_T is the list of individual (transformed) point clouds.
+        """
+        self.stitched_results = stitched_results
+        self.dmp_errors = {}
+    
+    def compute_all_dmp_errors(self) -> None:
+        """
+        Compute DMP errors for all stitching methods.
+        
+        Results are stored in self.dmp_errors as a dictionary mapping method names
+        to error dictionaries containing 'total_error', 'per_cloud_errors', and
+        'mean_error_per_cloud'.
+        """
+        print("=" * 70)
+        print("Computing DMP errors for all stitching methods")
+        print("=" * 70)
+        
+        for method_name, (stitched, point_clouds_T) in self.stitched_results.items():
+            print(f"\n--- Method: {method_name} ---")
+            errors = compute_dmp_error(point_clouds_T)
+            self.dmp_errors[method_name] = errors
+        
+        print("\n" + "=" * 70)
+        print("DMP Evaluation Summary")
+        print("=" * 70)
+        self._print_summary()
+    
+    def _print_summary(self) -> None:
+        """Print a summary of DMP errors for all methods."""
+        if not self.dmp_errors:
+            print("[WARN DMP] No errors computed yet. Run compute_all_dmp_errors() first.")
+            return
+        
+        # Sort methods by total error for ranking
+        sorted_methods = sorted(
+            self.dmp_errors.items(),
+            key=lambda x: x[1]['total_error']
+        )
+        
+        print("\nRanking by total DMP error (lower is better):")
+        for rank, (method_name, errors) in enumerate(sorted_methods, 1):
+            summary_items = []
+            for key, value in errors.items():
+                if key == 'per_cloud_errors' or key == 'per_cloud_squared_errors':
+                    pass
+                else:
+                    label = key.replace('_', ' ').title()
+
+                if isinstance(value, float):
+                    summary_items.append(f"{label}: {value:12.6f}")
+
+            print(f"  {rank}. {method_name:<25s} | {' | '.join(summary_items)}")
+    
+    def get_dmp_errors(self) -> dict[str, dict]:
+        """
+        Get the computed DMP errors for all methods.
+        
+        Returns
+        -------
+        dict[str, dict]
+            Dictionary mapping method names to error dictionaries.
+        """
+        if not self.dmp_errors:
+            print("[WARN DMP] No errors computed yet. Run compute_all_dmp_errors() first.")
+            return {}
+        return self.dmp_errors
+    
+    def get_best_method(self) -> tuple[str, float] | None:
+        """
+        Get the best performing method (lowest total DMP error).
+        
+        Returns
+        -------
+        tuple[str, float] or None
+            Tuple of (method_name, total_error), or None if no errors computed.
+        """
+        if not self.dmp_errors:
+            print("[WARN DMP] No errors computed yet. Run compute_all_dmp_errors() first.")
+            return None
+        
+        best_method = min(
+            self.dmp_errors.items(),
+            key=lambda x: x[1]['total_error']
+        )
+        return (best_method[0], best_method[1]['total_error'])
