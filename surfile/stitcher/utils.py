@@ -505,15 +505,16 @@ class PipelineStep:
         self._check_arguments()
         self._check_all_leaves_have_name()
         
-        _, next_pcs, local_transforms = self.f(pcs, **self.kwargs)
+        fixed, next_pcs, local_transforms = self.f(pcs, **self.kwargs)
         
         new_global_transforms = [T_local @ T for T, T_local in zip(current_transforms, local_transforms)]
         
         if not self.children and base_save_path is not None:
             self._save(new_global_transforms, base_save_path, self.name)
+            return self.name, fixed, next_pcs
         else:
             for child in self.children:
-                child.run(next_pcs, new_global_transforms, base_save_path)
+                return child.run(next_pcs, new_global_transforms, base_save_path)
 
     def _save(self, transforms, base_path, leaf_path_name):
         save_folder = os.path.join(base_path, leaf_path_name)
@@ -532,6 +533,9 @@ class TreePipeline:
         self.timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
     def run(self, pcs, save_transforms_root):
+        # prepare result dict[str, tuple[np.ndarray, list[np.ndarray]]]
+        stitching_results = {}
+
         base_save_path = os.path.join(
             save_transforms_root, 
             'pipelines', 
@@ -544,10 +548,10 @@ class TreePipeline:
             choice = self._prompt_user_for_run_choice(past_runs)
             if choice is None: #make a new run
                 print(f'[INFO PIPELINE] Running new pipeline: {self.name}')
-            else: #apply existing
+            else: # apply existing
                 print(f'[INFO PIPELINE] Applying past pipeline results from: {choice}')
-                self._run_past_pipeline(pcs, os.path.join(save_transforms_root, 'pipelines', choice))
-                return
+                stitching_results = self._run_past_pipeline(pcs, os.path.join(save_transforms_root, 'pipelines', choice))
+                return stitching_results
         
         # Inizializza trasformazioni identità
         initial_transforms = [np.eye(4) for _ in pcs]
@@ -555,7 +559,10 @@ class TreePipeline:
         print(f'[INFO PIPELINE] Starting Tree Pipeline: {self.name}')
         
         for root in self.root_steps:
-            root.run(pcs, initial_transforms, base_save_path)
+            leaf_name, fixed, next_pcs = root.run(pcs, initial_transforms, base_save_path)
+            stitching_results[leaf_name] = (fixed, next_pcs)
+
+        return stitching_results
             
     def _check_for_past_runs(self, save_transforms_root):        
         past_runs = []
@@ -582,5 +589,9 @@ class TreePipeline:
             print("Invalid input. Please enter a number corresponding to the options above.")
             
     def _run_past_pipeline(self, pcs, past_run_folder):
+        stitching_results = {}
+
         for subdir in os.listdir(past_run_folder):
-            sst.SurfaceStitcher.stitchSavedTransforms(pcs, os.path.join(past_run_folder, subdir), bplt=True)
+            fixed, next_pcs = sst.SurfaceStitcher.stitchSavedTransforms(pcs, os.path.join(past_run_folder, subdir), bplt=True)
+            stitching_results[subdir] = (fixed, next_pcs)
+        return stitching_results

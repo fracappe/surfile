@@ -53,6 +53,6 @@ pipe = sutils.TreePipeline(root_steps=[step_man], name="man_icp_pipe")
 
 if __name__ == "__main__":
     
-    pcs, folder_path = open_files(folder='G:\\Drive condivisi\\TIROCINI\\2026 - Aysu Oral\\figures\\4', downsample=2, userscales=[1000, 1000, 1])
+    pcs, folder_path = open_files(folder='G:\\Drive condivisi\\TIROCINI\\2026 - Aysu Oral\\figures\\tooth', downsample=2, userscales=[1, 1, 1])
 
     pipe.run(pcs, folder_path)

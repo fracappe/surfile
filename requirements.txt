@@ -1,0 +1,8 @@
+numpy 
+matplotlib
+open3d
+csaps
+scipy
+scikit-optimize
+scikit-image
+tqdm
