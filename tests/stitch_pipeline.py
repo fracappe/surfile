@@ -4,6 +4,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from surfile.stitcher import stitcher as sst
 from surfile.stitcher import utils as sutils
 from surfile.stitcher import pipeline as spipe
+from surfile.stitcher import comparator
 from surfile import measfile_io as fio
 
 import numpy as np
@@ -12,6 +13,32 @@ import pickle
 
 import tkinter as tk
 from tkinter import filedialog
+
+def open_file(path=None, downsample=1, userscales=[1, 1, 1]) -> np.ndarray:
+    if path is None:
+            root = tk.Tk()
+            root.withdraw()  # Hide the main Tkinter window
+
+            file_path = filedialog.askopenfilename(
+                title="Select a Point Cloud File", 
+                initialdir="G:\\Drive condivisi\\TIROCINI\\2026 - Aysu Oral\\figures"
+            )
+            if not file_path:
+                print("No file selected. Exiting.")
+                exit()
+    else:
+        file_path = path
+
+    print(f"📂 Loading point cloud from: {file_path}")
+    try:
+        # Using a downsample factor to speed up tests, adjust if needed.
+        point_cloud = fio.open_pc_from_file(file_path, downsample=downsample, userscales=userscales)
+        print(f"✅ Successfully loaded point cloud with shape: {point_cloud.shape}")
+    except Exception as e:
+        print(f"❌ Failed to load point cloud: {e}")
+        exit()
+            
+    return point_cloud, file_path
 
 def open_files(folder=None, downsample=1, userscales=[1, 1, 1]) -> list[np.ndarray]:
     if folder is None:
@@ -54,24 +81,19 @@ step_man.add_child(step_icp_mm)
 
 pipe = spipe.TreePipeline(root_steps=[step_man], name="manpt_icp_pipe")
 
+step_man_CAD = spipe.PipelineStep(sst.SurfaceStitcher.stitchManual, name="manual_cad", bplt=True)
+step_icp_CAD = spipe.PipelineStep(sst.SurfaceStitcher.stitchICP, name="icp_cad", thresholder=sst.Thresholder(type='KDTree'), isolator=sst.Isolator(type='KDTree'), bplt=True)
+step_man_CAD.add_child(step_icp_CAD)
+pipe_CAD = spipe.TreePipeline(root_steps=[step_man_CAD], name="manual_cad_pipe")
+
 if __name__ == "__main__":
     
     pcs, folder_path = open_files(folder='G:\\Drive condivisi\\TIROCINI\\2026 - Aysu Oral\\figures\\tooth', downsample=3, userscales=[1, 1, 1])
-
     stitching_results = pipe.run(pcs, folder_path, bplt=False)
     
-    from surfile.stitcher import comparator
-    bqcomp = comparator.BallQuery(stitching_results)
-    dmpcomp = comparator.DensityMapPosterior(stitching_results)
-
-    # bqcomp.compute_all_deltas()
-    # # bqcomp.plot_deltas(noise_threshold=0.1)
-    # bqcomp.colormap_deltas('xyz')
-    # bqcomp.plot_histograms(noise_threshold=0.1)
-
-    dmpcomp.compute_all_dmp_errors(KDTreeMutual=True)
-    dmpcomp.plot_dmp_per_cloud() # aggiunta fra
-
-    # dmpcomp.plot_dmp_histograms()
+    cad_pc, cad_path = open_file(path='G:\\Drive condivisi\\TIROCINI\\2025 - Francesca Capellino\\Tesi\\Corone\\corona_cad.stl', downsample=1, userscales=[1000, 1000, 1000])
+    cadcomp = comparator.CAD(stitching_results, cad_pc)
+    cadcomp.align_cad_to_stitched(pipe_CAD, folder_path, bplt=False)
+    # cadcomp.plot_deltas_cad(noise_threshold=0.5, labels=["Manual", "ICP Convex Hull", "ICP MaxMin"], figsize_scale=5.0)
 
     plt.show()

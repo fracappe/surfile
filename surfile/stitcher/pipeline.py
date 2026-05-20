@@ -91,6 +91,8 @@ class TreePipeline:
         # prepare result dict[str, tuple[np.ndarray, list[np.ndarray]]]
         stitching_results = {}
 
+        # if save_transforms_root is not a folder but a file only consider the base path
+        save_transforms_root = os.path.dirname(save_transforms_root) if os.path.isfile(save_transforms_root) else save_transforms_root
         base_save_path = os.path.join(
             save_transforms_root, 
             'pipelines', 
@@ -120,7 +122,7 @@ class TreePipeline:
         if not os.path.exists(os.path.join(save_transforms_root, 'pipelines')): 
             return past_runs
         for subdir in os.listdir(os.path.join(save_transforms_root, 'pipelines')):
-            if self.name in subdir:
+            if subdir.startswith(self.name):
                 past_runs.append(subdir)
                 
         return past_runs

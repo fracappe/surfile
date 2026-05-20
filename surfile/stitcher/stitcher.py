@@ -747,7 +747,7 @@ class Isolator():
             vis.add_geometry(pcd_o3d)
 
             render_option = vis.get_render_option()
-            render_option.point_size = 2
+            render_option.point_size = 10
 
             vis.run()
             vis.destroy_window()
