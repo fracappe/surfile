@@ -59,14 +59,15 @@ def open_pc_from_dir(path: str, NM='remove', userscales=[1, 1, 1], downsample=1,
                     test = test.strip()
                     parts = re.split(r"[,\s;]+", test)
 
-                    if len(parts) == 3:
-                    
+                    if len(parts) >= 3:
                         if not (len(parts[0]) == len(parts[1]) and len(parts[1]) == len(parts[2])):
                             print("Warning: it might not be a point cloud")
+                        if len(parts) > 3:
+                            print("Warning: more than 3 columns detected, only the first three will be used")
 
                         pc = np.genfromtxt(full_path, unpack=False, usecols=(0, 1, 2), delimiter=detect_csv_separator(full_path))
                     else:
-                        raise IndexError(f"File has {len(parts)} columns...")
+                        raise IndexError(f"File {full_path} does not have at least 3 columns for x, y, z coordinates.")
 
             elif f.endswith(".npy"):
                 pc = np.load(full_path, allow_pickle=True)

@@ -48,7 +48,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import numpy as np
-from scipy.spatial import KDTree
+from scipy.spatial import cKDTree
 
 from surfile.stitcher import stitcher as sstitcher
 from surfile.stitcher import plotter as splotter
@@ -114,7 +114,7 @@ def compute_deltas(
     """
     stitched = np.asarray(stitched, dtype=float)
     n = len(stitched)
-    tree = KDTree(stitched)
+    tree = cKDTree(stitched)
 
     deltas = np.empty((n, 3), dtype=float)
     R = float(compute_R())
@@ -311,7 +311,7 @@ class BallQuery:
                 count, (minn, maxx), mean, stddev, skew, kurt = stats
                 print(f"{comp_label:>10s} | {count:10d} | {mean:12.6g} | {stddev:12.6g} | {minn:12.6g} | {maxx:12.6g}")
 
-    def plot_deltas(self, noise_threshold: float, labels: Sequence[str] | None = None, figsize_scale: float = 5.0) -> plt.Figure:
+    def  plot_deltas(self, noise_threshold: float, labels: Sequence[str] | None = None, figsize_scale: float = 5.0) -> plt.Figure:
         """Generate diagnostic comparison figure for stitching methods.
         
         Produces a figure with one row per stitching method and one row per
@@ -406,7 +406,16 @@ class BallQuery:
         splotter.compare_point_clouds([[pc] for _, (pc, _) in self.stitched_results.items()], cmap)
 
 
-def compute_dmp_error(point_clouds_T: list[np.ndarray]) -> dict[str, float]:
+def _default_dmp_distance_function(fixed_points: np.ndarray, moving_points: np.ndarray) -> np.ndarray:
+    """Return nearest-neighbour distances from fixed_points to moving_points."""
+    tree = cKDTree(moving_points)
+    distances, _ = tree.query(fixed_points, k=1)
+    return distances
+
+def compute_dmp_error(
+    point_clouds_T: list[np.ndarray],
+    distance_function: Callable[[np.ndarray, np.ndarray], np.ndarray] | None = None,
+) -> dict[str, float]:
     """
     Compute the Dense Map Posterior (DMP) error for a list of transformed point clouds.
     
@@ -420,6 +429,9 @@ def compute_dmp_error(point_clouds_T: list[np.ndarray]) -> dict[str, float]:
     ----------
     point_clouds_T : list[ndarray]
         List of transformed point clouds, where each element is an (N, 3) array.
+    distance_function : callable, optional
+        Function that takes ``fixed_points`` and ``moving_points`` and returns
+        either an array of distances or an array of difference vectors.
     
     Returns
     -------
@@ -428,7 +440,12 @@ def compute_dmp_error(point_clouds_T: list[np.ndarray]) -> dict[str, float]:
         - 'total_error': Sum of all errors across all point clouds
         - 'per_cloud_errors': List of errors for each point cloud
         - 'mean_error_per_cloud': Mean error per point cloud
+        - 'DMP metric (squared_total_error)': sum over each cloud of the sum over each point of the squared distance to the nearest neighbour in the rest of the clouds
+
     """
+    if distance_function is None:
+        distance_function = _default_dmp_distance_function
+
     point_clouds_T = [np.asarray(pc, dtype=float) for pc in point_clouds_T]
     n_clouds = len(point_clouds_T)
     
@@ -447,11 +464,17 @@ def compute_dmp_error(point_clouds_T: list[np.ndarray]) -> dict[str, float]:
         # Combine all other point clouds
         other_clouds = np.vstack([point_clouds_T[j] for j in range(n_clouds) if j != i])
         
-        # Build KDTree for efficient nearest neighbour search
-        tree = KDTree(other_clouds)
+        distances = distance_function(current_cloud, other_clouds)
+        distances = np.asarray(distances, dtype=float)
+        if distances.ndim == 2 and distances.shape[1] == 3:
+            distances = np.linalg.norm(distances, axis=1)
+        elif distances.ndim != 1:
+            raise ValueError(
+                "distance_function must return either a 1D distance array or an (N, 3) array of difference vectors"
+            )
         
-        # Find nearest neighbour distances for each point in current cloud
-        distances, _ = tree.query(current_cloud, k=1)
+        if distances.size == 0:
+            raise ValueError("distance_function returned an empty distance array")
         
         # Average of errors for this point cloud
         mean_error = np.mean(distances)
@@ -459,9 +482,9 @@ def compute_dmp_error(point_clouds_T: list[np.ndarray]) -> dict[str, float]:
         mean_total_error += mean_error
 
         # Squared sum of errors of distances
-        squared_error = np.sqrt(np.sum(distances ** 2))
+        squared_error = float(np.sum(distances ** 2))
         per_cloud_squared_errors.append(squared_error)
-        squared_total_error += squared_error
+        squared_total_error += squared_error  # THIS IS DMP METRIC 
 
         print(f"Point cloud {i}: error = {mean_error:.6f}, mean distance = {mean_error:.6f}, squared error = {squared_error:.6f}")
     
@@ -471,6 +494,7 @@ def compute_dmp_error(point_clouds_T: list[np.ndarray]) -> dict[str, float]:
     print(f"\nTotal DMP error: {mean_total_error / n_clouds:.6f}")
     print(f"Mean error per cloud: {mean_error_per_cloud:.6f}")
     print(f"Squared error per cloud: {squared_error_per_cloud:.6f}")
+    print(f"DMP metric (squared total error): {squared_total_error:.6f}")
     
     return {
         'total_error': float(mean_total_error / n_clouds),
@@ -478,8 +502,8 @@ def compute_dmp_error(point_clouds_T: list[np.ndarray]) -> dict[str, float]:
         'per_cloud_squared_errors': per_cloud_squared_errors,
         'mean_error_per_cloud': float(mean_error_per_cloud),
         'squared_error_per_cloud': float(squared_error_per_cloud),
+        'DMP metric (squared_total_error)': float(squared_total_error)
     }
-
 
 class DensityMapPosterior:
     """
@@ -499,21 +523,43 @@ class DensityMapPosterior:
         self.stitched_results = stitched_results
         self.dmp_errors = {}
     
-    def compute_all_dmp_errors(self) -> None:
+    def compute_all_dmp_errors(
+        self,
+        distance_function: Callable[[np.ndarray, np.ndarray], np.ndarray] | None = None,
+        KDTreeMutual: bool = False,
+    ) -> None:
         """
         Compute DMP errors for all stitching methods.
         
         Results are stored in self.dmp_errors as a dictionary mapping method names
         to error dictionaries containing 'total_error', 'per_cloud_errors', and
         'mean_error_per_cloud'.
+
+        Parameters
+        ----------
+        distance_function : callable, optional
+            Function that takes ``fixed_points`` and ``moving_points`` and
+            returns either an array of distances or an array of difference
+            vectors. If ``None``, a standard KDTree nearest-neighbour distance
+            is used.
+        KDTreeMutual : bool, optional
+            If True and ``distance_function`` is None, uses
+            ``sstitcher.KDTree_mutual_diffs`` to compute only mutual nearest
+            neighbour differences. This parameter is kept for compatibility.
         """
+        if distance_function is None:
+            if KDTreeMutual:
+                distance_function = sstitcher.KDTree_mutual_diffs
+            else:
+                distance_function = _default_dmp_distance_function
+
         print("=" * 70)
         print("Computing DMP errors for all stitching methods")
         print("=" * 70)
         
         for method_name, (stitched, point_clouds_T) in self.stitched_results.items():
             print(f"\n--- Method: {method_name} ---")
-            errors = compute_dmp_error(point_clouds_T)
+            errors = compute_dmp_error(point_clouds_T, distance_function=distance_function)
             self.dmp_errors[method_name] = errors
         
         print("\n" + "=" * 70)
@@ -579,3 +625,148 @@ class DensityMapPosterior:
             key=lambda x: x[1]['total_error']
         )
         return (best_method[0], best_method[1]['total_error'])
+    
+    # fra aggiunta
+
+    def plot_dmp_per_cloud(self, method_name: str | None = None, figsize: tuple[int, int] = (8, 4), ax: plt.Axes | None = None, show: bool = True) -> plt.Figure | None:
+        """
+        Plot per-cloud DMP squared errors for one or all methods.
+
+        X axis: point cloud index `i` (i.e. point_clouds_T[i]).
+        Y axis: per-cloud squared DMP error (the contributions used to form the
+        'DMP metric (squared_total_error)' for each method).
+
+        If `method_name` is provided, only that method is plotted. Otherwise
+        every computed method is plotted on the same axes for comparison.
+        Each series is connected with lines and has circle markers on every point.
+        """
+        if not self.dmp_errors:
+            print("[WARN DMP] No errors computed yet. Run compute_all_dmp_errors() first.")
+            return None
+
+        if method_name is not None and method_name not in self.dmp_errors:
+            print(f"[WARN DMP] Method '{method_name}' not found in computed errors.")
+            return None
+
+        methods = [method_name] if method_name else list(self.dmp_errors.keys())
+
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize)
+        else:
+            fig = ax.figure
+
+        # collect tick range across all methods to produce consistent M_i labels
+        lengths = []
+        for method in methods:
+            errors = self.dmp_errors[method].get('per_cloud_squared_errors', [])
+            if not errors:
+                print(f"[WARN DMP] No per-cloud squared errors for method '{method}'. Skipping.")
+                continue
+
+            y = np.asarray(errors, dtype=float)
+            x = np.arange(len(y))
+
+            total = self.dmp_errors[method].get('DMP metric (squared_total_error)', None)
+            label = method if total is None else f"{method} (total={total:.6g})"
+
+            ax.plot(x, y, marker='o', linestyle='-', linewidth=1.2, markersize=6, label=label)
+            lengths.append(len(y))
+
+        if not lengths:
+            print("[WARN DMP] No valid per-cloud errors found to plot.")
+            return fig
+
+        max_n = max(lengths)
+        xticks = np.arange(max_n)
+        ax.set_xticks(xticks)
+        ax.set_xticklabels([f"M_{i}" for i in xticks])
+
+        ax.set_xlabel("point cloud (M_i)")
+        ax.set_ylabel("per-cloud squared DMP error")
+        title_suffix = f" - {method_name}" if method_name else ""
+        ax.set_title("DMP per-cloud contributions" + title_suffix)
+        ax.grid(True, linestyle='--', alpha=0.5)
+        ax.legend(fontsize=8)
+
+        if show:
+            plt.show()
+
+        return fig
+
+    def plot_dmp_histograms(
+        self,
+        method_name: str | None = None,
+        bins: int | str = 'auto',
+        distance_function: Callable[[np.ndarray, np.ndarray], np.ndarray] | None = None,
+        KDTreeMutual: bool = False,
+        figsize: tuple[int, int] | None = None,
+        show: bool = True,
+    ) -> dict[str, plt.Figure] | None:
+        """
+        For each point cloud, plot a histogram of distances to the other
+        point clouds using the supplied distance function (or KDTree by
+        default). If `method_name` is None, produces one figure per method
+        in `self.stitched_results` (each figure contains m histograms for m
+        point clouds). Returns a dict mapping method->Figure.
+
+        Note: if a distance function like ``sstitcher.KDTree_mutual_diffs`` is
+        used it may return fewer values than the number of points (mutual
+        matches only); the histogram will be plotted on the returned values.
+        """
+        if not self.dmp_errors:
+            print("[WARN DMP] No errors computed yet. Run compute_all_dmp_errors() first.")
+            return None
+
+        if distance_function is None:
+            if KDTreeMutual:
+                distance_function = sstitcher.KDTree_mutual_diffs
+            else:
+                distance_function = _default_dmp_distance_function
+
+        methods = [method_name] if method_name else list(self.stitched_results.keys())
+        figs: dict[str, plt.Figure] = {}
+
+        for method in methods:
+            if method not in self.stitched_results:
+                print(f"[WARN DMP] Method '{method}' not found. Skipping.")
+                continue
+
+            _, point_clouds_T = self.stitched_results[method]
+            m = len(point_clouds_T)
+            if m == 0:
+                print(f"[WARN DMP] No point clouds for method '{method}'. Skipping.")
+                continue
+
+            # layout: try to make a grid close to square
+            cols = int(np.ceil(np.sqrt(m)))
+            rows = int(np.ceil(m / cols))
+            if figsize is None:
+                fig_w = max(6, cols * 3)
+                fig_h = max(3, rows * 2.5)
+                fig = plt.figure(figsize=(fig_w, fig_h))
+            else:
+                fig = plt.figure(figsize=figsize)
+
+            for i, current_cloud in enumerate(point_clouds_T):
+                other_clouds = np.vstack([point_clouds_T[j] for j in range(m) if j != i])
+                d = distance_function(current_cloud, other_clouds)
+                d = np.asarray(d, dtype=float)
+                if d.ndim == 2 and d.shape[1] == 3:
+                    d = np.linalg.norm(d, axis=1)
+
+                ax = fig.add_subplot(rows, cols, i + 1)
+                if d.size == 0:
+                    ax.text(0.5, 0.5, 'no data', ha='center', va='center')
+                else:
+                    ax.hist(d, bins=bins, color='C0', alpha=0.85)
+                ax.set_title(f"{method} — M_{i}", fontsize=8)
+                ax.set_xlabel('distance')
+                ax.set_ylabel('count')
+                ax.grid(True, linestyle='--', alpha=0.4)
+
+            fig.suptitle(f"DMP distance histograms — {method}")
+            figs[method] = fig
+            if show:
+                plt.show()
+
+        return figs
