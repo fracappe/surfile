@@ -53,6 +53,7 @@ from scipy.spatial import cKDTree
 from surfile.stitcher import stitcher as sstitcher
 from surfile.stitcher import plotter as splotter
 from surfile.stitcher import pipeline as spipe
+from surfile.stitcher import utils as sutils
 
 
 def make_compute_R(point_clouds_T):
@@ -77,12 +78,13 @@ def make_compute_R(point_clouds_T):
         fixed_pts = point_clouds_T[i]
         aligned = point_clouds_T[i + 1]
 
-        fix_sub, temp_sub = sstitcher.Isolator.isolate_common_points_kdtree(fixed_pts, aligned, bins_after_max=1, bplt=False)
+        R = [0.0]
 
-        R = np.nanmean(fix_sub) - np.nanmean(temp_sub)
-        R_vals.append(abs(R))
+        sstitcher.Isolator.isolate_common_points_kdtree(fixed_pts, aligned, max_distance=R, bins_after_max=1, bplt=False)
+        R_vals.append(abs(R[0]))
 
     R_value = np.mean(R_vals)
+    print(f"Computed neighbourhood radius R = {R_value:.6f} based on mean Z-offset between point clouds, with individual values: {R_vals}")
 
     # return the function expected by compute_deltas
     def compute_R():
@@ -359,7 +361,7 @@ class BallQuery:
             figsize_scale
         )
 
-    def colormap_deltas(self, mode='modulus'):
+    def colormap_deltas(self, mode='xyz'):
         """Visualize deltas using colormapped point clouds.
         
         Parameters
@@ -777,6 +779,7 @@ class CAD:
         inside a radius R, compute the mean of that neighbourhood, and return
         the vector difference between the point and that mean.
     """
+    @sutils.ensure_stitched_result_dict
     def __init__(self, stitched_results: dict[str, tuple[np.ndarray, list[np.ndarray]]], cad_points: np.ndarray):
         self.stitched_results = stitched_results
         self.cad_points = cad_points
@@ -784,14 +787,14 @@ class CAD:
 
         self.stitched_aligned_to_cad = {}
 
-    def align_cad_to_stitched(self, pipeline: spipe.TreePipeline, path: str, bplt: bool = False):
+    def align_cad_to_stitched(self, pipeline: spipe.TreePipeline, pipe_path: str, bplt: bool = False):
         """
         Align the CAD point cloud to the stitched surface using a registration pipeline
         """
         for method_name, restuple in self.stitched_results.items():
             stitched, _ = restuple
             pipeline.name = f'{method_name}_{pipeline.name}'
-            aligned_cad = pipeline.run([self.cad_points, stitched], save_transforms_root=path, bplt=bplt)
+            aligned_cad = pipeline.run([self.cad_points, stitched], save_transforms_root=pipe_path, bplt=bplt)
 
             if not aligned_cad:
                 print(f"[WARN CAD] First run of pipeline {pipeline.name} rerun with saved pipe to continue")
@@ -799,11 +802,14 @@ class CAD:
             
             self.stitched_aligned_to_cad[method_name] = aligned_cad
 
-    def compute_all_deltas_cad(self):
-        for method_name, restuple in self.stitched_aligned_to_cad.items():
-            stitched, _ = restuple
-            cR = make_compute_R([stitched])  # compute R based on the stitched surface itself
-            self.deltas_cad[method_name] = compute_deltas(stitched, lambda: cR())
+        
+
+
+    # def compute_all_deltas_cad(self):
+    #     for method_name, restuple in self.stitched_aligned_to_cad.items():
+    #         stitched, _ = restuple
+    #         cR = make_compute_R([stitched])  # compute R based on the stitched surface itself
+    #         self.deltas_cad[method_name] = compute_deltas(stitched, lambda: cR())
 
     def plot_deltas_cad(self, method_name: str, noise_threshold: float, figsize: tuple[int, int] = (10, 6)) -> plt.Figure | None:
         if method_name not in self.deltas_cad:
@@ -816,3 +822,11 @@ class CAD:
         fig.suptitle(f"Deltas to CAD comparison for {method_name}\n(noise threshold = {noise_threshold:.3g})", fontsize=11)
         return fig
         
+    def compare_CAD_stitched(self, pipe_CAD, pipe_path):
+        self.align_cad_to_stitched(pipe_CAD, pipe_path, bplt=False)
+
+        for key in self.stitched_aligned_to_cad:
+            bq = BallQuery(self.stitched_aligned_to_cad[key])
+            bq.plot_deltas(noise_threshold=0.5)
+            bq.colormap_deltas(mode='xyz')
+            bq.print_summary()

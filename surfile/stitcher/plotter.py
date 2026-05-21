@@ -1,3 +1,5 @@
+import ctypes
+
 import open3d as o3d
 import numpy as np
 import matplotlib.pyplot as plt
@@ -100,6 +102,7 @@ def show_point_clouds(point_clouds: list[o3d.geometry.PointCloud], colors="norma
 
     pos: tuple[int, int, int, int] = (50, 50, 800, 600) if position == 'auto' else position
     o3d.visualization.draw_geometries(point_clouds, point_show_normal=False, window_name=name, width=pos[2], height=pos[3], left=pos[0], top=pos[1])
+    ctypes.windll.user32.SetProcessDPIAware()  # Ensure DPI awareness for correct window sizing on high-DPI displays
 
 @sutils.ensure_o3d_pc
 def compare_point_clouds(pc_lists: list[list[o3d.geometry.PointCloud]], colors="normal", names: None | list[str] = None):
@@ -132,7 +135,14 @@ def compare_point_clouds(pc_lists: list[list[o3d.geometry.PointCloud]], colors="
     elif len(names) < len(pc_lists):
         names = list(names) + [f"Window {i + 1}" for i in range(len(names), len(pc_lists))]
 
-    screen_width, screen_height = 1920, 1080  # Default screen size
+    
+    scale_factor = ctypes.windll.shcore.GetScaleFactorForDevice(0) / 100
+
+    screen_width = int(ctypes.windll.user32.GetSystemMetrics(0))
+    screen_height = int(ctypes.windll.user32.GetSystemMetrics(1))
+
+    print(f"[INFO COMPARE PLOT] Detected screen resolution: {screen_width}x{screen_height} (scale factor: {scale_factor:.2f})")
+
     rows, cols = _compute_window_grid(len(pc_lists))
 
     margin = 20
