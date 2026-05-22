@@ -151,30 +151,6 @@ def ensure_o3d_pc(func):
         
     return wrapper
 
-def ensure_stitched_result_dict(func):
-    from functools import wraps
-
-    @wraps(func)
-    def wrapper(self, stitched_results, *args, **kwargs):
-
-        if isinstance(stitched_results, dict):
-            processed = stitched_results
-
-        elif isinstance(stitched_results, list):
-            processed = {
-                f"pc{i+1}": (pc, [pc])
-                for i, pc in enumerate(stitched_results)
-            }
-
-        else:
-            processed = {
-                "pc1": (stitched_results, [stitched_results])
-            }
-
-        return func(self, processed, *args, **kwargs)
-
-    return wrapper
-
 @ensure_numpy_pcd
 def pcd_least_squared_plane(pcds: list[np.ndarray]):
     """

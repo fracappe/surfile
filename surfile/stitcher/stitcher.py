@@ -579,7 +579,7 @@ class Isolator():
         return fixed_subset, moving_subset
 
     @staticmethod
-    def isolate_common_points_kdtree(fixed_pts: np.ndarray, moving_pts: np.ndarray, max_distance: list=[0.0], bins_after_max=1, bplt=False):
+    def isolate_common_points_kdtree(fixed_pts: np.ndarray, moving_pts: np.ndarray, max_distance: list=[0.0], percentile=30, bplt=False):
         """
         Isolate points based on nearest neighbor distances.
 
@@ -616,9 +616,9 @@ class Isolator():
         dist_f2m, _ = A_to_B(fixed_pts, moving_pts)
         dist_m2f, _ = A_to_B(moving_pts, fixed_pts)
 
-        dist_hist, dist_bins = np.histogram(np.hstack((dist_f2m, dist_m2f)), bins='auto')
+        dist_hist, dist_bins = np.histogram(np.hstack((dist_f2m, dist_m2f)), bins='fd')
 
-        md = dist_bins[np.nanargmax(dist_hist) + bins_after_max]
+        md = np.percentile(np.hstack((dist_f2m, dist_m2f)), percentile)
 
         if False:
             fig, ax = plt.subplots()
@@ -1457,7 +1457,7 @@ class SurfaceStitcher:
             # selected_points_m = (temp[:, 0] >= fixed_pts[:, 0].min()) & (temp[:, 0] <= fixed_pts[:, 0].max()) & (temp[:, 1] >= fixed_pts[:, 1].min()) & (temp[:, 1] <= fixed_pts[:, 1].max())
             # tz = np.median(fixed_pts[selected_points_f, 2]) - np.median(temp[selected_points_m, 2])
 
-            fix_sub, temp_sub = isolator.isolate_common_points_kdtree(fixed_pts, aligned, bins_after_max=1, bplt=True)
+            fix_sub, temp_sub = isolator.isolate_common_points_kdtree(fixed_pts, aligned, percentile=50, bplt=True)
             tz = np.nanmean(fix_sub[:, 2]) - np.nanmean(temp_sub[:, 2])
 
             aligned[:, 2] += tz

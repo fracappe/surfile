@@ -49,89 +49,12 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import numpy as np
 from scipy.spatial import cKDTree
+import open3d as o3d
 
 from surfile.stitcher import stitcher as sstitcher
 from surfile.stitcher import plotter as splotter
 from surfile.stitcher import pipeline as spipe
 from surfile.stitcher import utils as sutils
-
-
-def make_compute_R(point_clouds_T):
-    """Create a function that computes the neighbourhood radius for deltas computation.
-    
-    Calculates the mean Z-offset between consecutive point clouds and returns
-    a callable that provides this radius value.
-    
-    Parameters
-    ----------
-    point_clouds_T : list[ndarray]
-        List of point clouds (transformed), where each element is an (N, 3) array.
-    
-    Returns
-    -------
-    callable
-        A function that returns the computed neighbourhood radius.
-    """
-    R_vals = []
-
-    for i in range(len(point_clouds_T) - 1):
-        fixed_pts = point_clouds_T[i]
-        aligned = point_clouds_T[i + 1]
-
-        R = [0.0]
-
-        sstitcher.Isolator.isolate_common_points_kdtree(fixed_pts, aligned, max_distance=R, bins_after_max=1, bplt=False)
-        R_vals.append(abs(R[0]))
-
-    R_value = np.mean(R_vals)
-    print(f"Computed neighbourhood radius R = {R_value:.6f} based on mean Z-offset between point clouds, with individual values: {R_vals}")
-
-    # return the function expected by compute_deltas
-    def compute_R():
-        return R_value
-
-    return compute_R
-
-def compute_deltas(
-    stitched: np.ndarray,
-    compute_R: Callable[[np.ndarray], float],
-) -> np.ndarray:
-    """
-    Compute the local-mean residual for every point in *stitched*.
-
-    Parameters
-    ----------
-    stitched : ndarray, shape (N, 3)
-        The stitched point cloud to analyse.
-    compute_R : callable (point: ndarray shape (3,)) -> float
-        External function that returns the neighbourhood radius for a given
-        point.  It is called once per point.
-
-    Returns
-    -------
-    deltas : ndarray, shape (N, 3)
-        ``deltas[i] = stitched[i] − mean(neighbourhood_i)``
-        where neighbourhood_i contains every point of *stitched* whose
-        Euclidean distance from ``stitched[i]`` is ≤ R_i (inclusive of the
-        point itself).
-    """
-    stitched = np.asarray(stitched, dtype=float)
-    n = len(stitched)
-    tree = cKDTree(stitched)
-
-    deltas = np.empty((n, 3), dtype=float)
-    R = float(compute_R())
-    
-    print(f"Starting KDTree query_ball_point execution with radius {R}...")
-    idx = tree.query_ball_point(stitched, r=R) # This operation can be slow for large point clouds
-    
-    for i, (point, neighbours) in tqdm(enumerate(zip(stitched, idx)), total=n, desc="Computing deltas", colour='cyan'):            
-        neighbourhood = stitched[neighbours]          # always contains point itself
-        mean_vec = neighbourhood.mean(axis=0)
-        deltas[i] = point - mean_vec
-
-    print("\n")
-    return deltas
 
 _COMPONENT_LABELS = ("x", "y", "z")
 _COL_TITLES = ("|Δ|", "Δx", "Δy", "Δz")
@@ -261,12 +184,15 @@ def _plot_comparison_figure(
         fontsize=11, y=1.01,
     )
     return fig
-    
 
-class BallQuery:
+
+class Comparator:
     """
-    A class to encapsulate the comparison of stitching results.
+    Main class to compare stitching results using various metrics and visualizations.
     """
+    stitched_results: dict[str, tuple[np.ndarray, list[np.ndarray]]]
+    deltas: dict[str, np.ndarray]
+    
     def __init__(self, stitched_results: dict[str, tuple[np.ndarray, list[np.ndarray]]]):
         """Initialize the Comparator with stitching results.
         
@@ -276,22 +202,17 @@ class BallQuery:
             Dictionary mapping method names to tuples of (stitched_surface, point_clouds_T)
             where stitched_surface is the final stitched point cloud and
             point_clouds_T is the list of individual (transformed) point clouds.
+        names : sequence[str], optional
+            Labels for each stitching method. If None, uses "Method 0", "Method 1", etc.
         """
         self.stitched_results = stitched_results
         self.deltas = {}
 
-        self.compute_all_deltas()
+        self.compute()
 
-    def compute_all_deltas(self):
-        """Compute local-mean residuals for all stitching methods.
-        
-        Calculates deltas for each stitched result and stores them in self.deltas.
-        Must be called before plotting or colormapping.
-        """
-        for method_name, restuple in self.stitched_results.items():
-            stitched, stitched_T = restuple
-            cR = make_compute_R(stitched_T)
-            self.deltas[method_name] = compute_deltas(stitched, cR)
+    def compute(self):
+        print("[Comparator] Base compute() method called. Override this method in subclasses to compute specific metrics.")
+        pass
 
     def print_summary(self):
         """
@@ -408,14 +329,155 @@ class BallQuery:
             Colormap name for point cloud visualization (default: "plasma").
         """
         splotter.compare_point_clouds([[pc] for _, (pc, _) in self.stitched_results.items()], cmap)
+    
+    @staticmethod
+    def _ensure_stitched_result_dict(stitched_results, names=None):
+        if isinstance(stitched_results, dict):
+            return stitched_results
 
+        if names is None:
+            raise ValueError("names must be provided when stitched_results is not a dict")
 
-def _default_dmp_distance_function(fixed_points: np.ndarray, moving_points: np.ndarray) -> np.ndarray:
-    """Return nearest-neighbour distances from fixed_points to moving_points."""
-    tree = cKDTree(moving_points)
-    distances, _ = tree.query(fixed_points, k=1)
-    return distances
+        if isinstance(stitched_results, list):
+            if not isinstance(names, (list, tuple)):
+                raise ValueError("names must be a list or tuple of the same length as stitched_results")
+            if len(names) != len(stitched_results):
+                raise ValueError("Length of names must match number of point clouds in stitched_results")
+            return {
+                name: (pc, [pc])
+                for name, pc in zip(names, stitched_results)
+            }
 
+        if isinstance(names, (list, tuple)):
+            if len(names) != 1:
+                raise ValueError("names must be a single string or a single-element list/tuple for a single point cloud")
+            name = names[0]
+        else:
+            name = names
+
+        return {
+            name: (stitched_results, [stitched_results])
+        }
+    
+    def save_deltas(self, filepath: str):
+        pass
+    
+
+def make_compute_R(point_clouds_T):
+    """Create a function that computes the neighbourhood radius for deltas computation.
+    
+    Calculates a dynamic radius based on the internal point density of the clouds
+    and the typical gap (median offset) between consecutive point clouds.
+
+    "Accurate 3D comparison of complex topography with terrestrial laser scanner: Application to the Rangitikei canyon (N-Z)",
+    Lague et al., ISPRS Journal of Photogrammetry and Remote Sensing, 2013.
+    https://doi.org/10.1016/j.isprsjprs.2013.04.009
+    """
+    R_vals = []
+
+    for i in range(len(point_clouds_T) - 1):
+        fixed_pts = point_clouds_T[i]
+        aligned = point_clouds_T[i + 1]
+
+        fppc = sutils.pcd_to_o3d_pcd(fixed_pts)
+        apc = sutils.pcd_to_o3d_pcd(aligned)
+
+        internal_distances = np.asarray(fppc.compute_nearest_neighbor_distance())
+        cloud_resolution = np.mean(internal_distances)
+
+        r_patch = cloud_resolution * 5.0 
+
+        distances = np.asarray(apc.compute_point_cloud_distance(fppc))
+
+        g = np.percentile(distances, 50) 
+
+        R = np.sqrt(g**2 + r_patch**2)
+        R_vals.append(R)
+
+        if False:
+            fig, ax = plt.subplots()
+
+            ax.hist(distances, bins='auto', alpha=0.5, label="fixed → moving")
+            ax.vlines([g], 0, plt.ylim()[1], colors='r', linestyles='dashed', label='Median Gap (g)')
+            ax.vlines([R], 0, plt.ylim()[1], colors='g', linewidth=2, label=f'Final Radius R ({R:.4f})')
+
+            ax.set_xlabel("Distance")
+            ax.set_ylabel("Count")
+            ax.set_title(f"Distance distribution (Pair {i} to {i+1})")
+            
+            plt.legend()
+            plt.show()
+
+    R_value = float(np.mean(R_vals))
+    print(f"Computed neighbourhood radius R = {R_value:.6f}")
+    print(f"Based on patch radius = {r_patch:.6f} and typical gap = {g:.6f}")
+
+    def compute_R(*args, **kwargs):
+        return R_value
+
+    return compute_R
+
+def compute_deltas(
+    stitched: np.ndarray,
+    compute_R: Callable[[np.ndarray], float],
+) -> np.ndarray:
+    """
+    Compute the local-mean residual for every point in *stitched*.
+
+    Parameters
+    ----------
+    stitched : ndarray, shape (N, 3)
+        The stitched point cloud to analyse.
+    compute_R : callable (point: ndarray shape (3,)) -> float
+        External function that returns the neighbourhood radius for a given
+        point.  It is called once per point.
+
+    Returns
+    -------
+    deltas : ndarray, shape (N, 3)
+        ``deltas[i] = stitched[i] − mean(neighbourhood_i)``
+        where neighbourhood_i contains every point of *stitched* whose
+        Euclidean distance from ``stitched[i]`` is ≤ R_i (inclusive of the
+        point itself).
+    """
+    stitched = np.asarray(stitched, dtype=float)
+    n = len(stitched)
+    tree = cKDTree(stitched)
+
+    deltas = np.empty((n, 3), dtype=float)
+    R = float(compute_R())
+    
+    print(f"Starting KDTree query_ball_point execution with radius {R}...")
+    idx = tree.query_ball_point(stitched, r=R) # This operation can be slow for large point clouds
+    # _, idx = tree.query(stitched, k=30)
+    
+    for i, (point, neighbours) in tqdm(enumerate(zip(stitched, idx)), total=n, desc="Computing deltas", colour='cyan'):            
+        neighbourhood = stitched[neighbours]  # always contains point itself
+        mean_vec = neighbourhood.mean(axis=0)
+        deltas[i] = point - mean_vec
+
+    print("\n")
+    return deltas
+
+class BallQuery(Comparator):
+    """
+    A class to encapsulate the comparison of stitching results.
+    """
+    def __init__(self, stitched_results: dict[str, tuple[np.ndarray, list[np.ndarray]]]):
+        super().__init__(stitched_results)
+
+    def compute(self):
+        """Compute local-mean residuals for all stitching methods.
+        
+        Calculates deltas for each stitched result and stores them in self.deltas.
+        Must be called before plotting or colormapping.
+        """
+        for method_name, restuple in self.stitched_results.items():
+            stitched, stitched_T = restuple
+            cR = make_compute_R(stitched_T)
+            self.deltas[method_name] = compute_deltas(stitched, cR)
+
+ 
 def compute_distances_T(
     point_clouds_T: list[np.ndarray],
     distance_function: Callable[[np.ndarray, np.ndarray], np.ndarray] | None = None,
@@ -437,9 +499,6 @@ def compute_distances_T(
     list[np.ndarray]
         List of distance arrays for each point cloud
     """
-    if distance_function is None:
-        distance_function = _default_dmp_distance_function
-
     point_clouds_T = [np.asarray(pc, dtype=float) for pc in point_clouds_T]
     n_clouds = len(point_clouds_T)
     
@@ -449,7 +508,7 @@ def compute_distances_T(
     distance_T = []
     
     # For each point cloud
-    for i in range(n_clouds):
+    for i in tqdm(range(n_clouds), desc="Computing DMP distances", colour='magenta'):
         current_cloud = point_clouds_T[i]
         
         # Combine all other point clouds
@@ -471,37 +530,28 @@ def compute_distances_T(
 
     return distance_T
 
-
-class DensityMapPosterior:
+class DensityMapPosterior():
     """
     A class to evaluate stitching quality using the Dense Map Posterior method.
     """
     def __init__(self, stitched_results: dict[str, tuple[np.ndarray, list[np.ndarray]]], 
-                 distance_function: Callable[[np.ndarray, np.ndarray], np.ndarray] | None = None, KDTreeMutual: bool = False):
-        """
-        Initialize the DensityMapPosterior evaluator with stitching results.
+                 distance_function: Callable[[np.ndarray, np.ndarray], np.ndarray] | None = None): 
+        if distance_function is None:
+            self.distance_function = sstitcher.KDTree_mutual_diffs
+        else:
+            self.distance_function = distance_function
         
-        Parameters
-        ----------
-        stitched_results : dict[str, tuple[ndarray, list[ndarray]]]
-            Dictionary mapping method names to tuples of (stitched_surface, point_clouds_T)
-            where stitched_surface is the final stitched point cloud and
-            point_clouds_T is the list of individual (transformed) point clouds.
-        """
         self.stitched_results = stitched_results
-        self.dmp_distances = {}
-        self.dmp_errors = {}
+        self.deltas = {}
 
-        self.compute_all_dmp_distances(distance_function=distance_function, KDTreeMutual=KDTreeMutual)
+        self.compute()
+
+        self.dmp_errors = {}
         self.compute_all_dmp_errors()
 
-    def compute_all_dmp_distances(
-        self,
-        distance_function: Callable[[np.ndarray, np.ndarray], np.ndarray] | None = None,
-        KDTreeMutual: bool = False,
-    ) -> None:
+    def compute(self) -> None:
         """
-        Compute DMP distances for all stitching methods and store in self.dmp_distances.
+        Compute DMP distances for all stitching methods and store in self.deltas.
         
         Parameters
         ----------
@@ -515,24 +565,14 @@ class DensityMapPosterior:
             ``sstitcher.KDTree_mutual_diffs`` to compute only mutual nearest
             neighbour differences. This parameter is kept for compatibility.
         """
-        if distance_function is None:
-            if KDTreeMutual:
-                distance_function = sstitcher.KDTree_mutual_diffs
-            else:
-                distance_function = _default_dmp_distance_function
-
         print("=" * 70)
         print("Computing DMP distances for all stitching methods")
         print("=" * 70)
         
         for method_name, (stitched, point_clouds_T) in self.stitched_results.items():
             print(f"\n--- Method: {method_name} ---")
-            distances = compute_distances_T(point_clouds_T, distance_function=distance_function)
-            self.dmp_distances[method_name] = distances
-        
-        print("\n" + "=" * 70)
-        print("DMP Distance Computation Summary")
-        print("=" * 70)
+            distances = compute_distances_T(point_clouds_T, distance_function=self.distance_function)
+            self.deltas[method_name] = distances
     
     def compute_all_dmp_errors(self) -> None:
         """
@@ -542,14 +582,9 @@ class DensityMapPosterior:
         to error dictionaries containing 'total_error', 'per_cloud_errors', and
         'mean_error_per_cloud'.
         """
-        print("=" * 70)
-        print("Computing DMP errors from stored distances")
-        print("=" * 70)
-
         self.dmp_errors = {}
 
-        for method_name, distance_list in self.dmp_distances.items():
-            print(f"\n--- Method: {method_name} ---")
+        for method_name, distance_list in self.deltas.items():
             mean_total_error = 0.0
             squared_total_error = 0.0
             per_cloud_mean_errors = []
@@ -575,15 +610,8 @@ class DensityMapPosterior:
                 mean_total_error += mean_error
                 squared_total_error += squared_error
 
-                print(f"Point cloud {i}: error = {mean_error:.6f}, mean distance = {mean_error:.6f}, squared error = {squared_error:.6f}")
-
             mean_error_per_cloud = np.mean(per_cloud_mean_errors)
             squared_error_per_cloud = np.mean(per_cloud_squared_errors)
-
-            print(f"\nTotal DMP error: {mean_total_error / n_clouds:.6f}")
-            print(f"Mean error per cloud: {mean_error_per_cloud:.6f}")
-            print(f"Squared error per cloud: {squared_error_per_cloud:.6f}")
-            print(f"DMP metric (squared total error): {squared_total_error:.6f}")
 
             self.dmp_errors[method_name] = {
                 'total_error': float(mean_total_error / n_clouds),
@@ -591,7 +619,7 @@ class DensityMapPosterior:
                 'per_cloud_squared_errors': per_cloud_squared_errors,
                 'mean_error_per_cloud': float(mean_error_per_cloud),
                 'squared_error_per_cloud': float(squared_error_per_cloud),
-                'DMP metric (squared_total_error)': float(squared_total_error)
+                'DMP metric': float(squared_total_error)
             }
     
     def print_summary(self) -> None:
@@ -613,39 +641,27 @@ class DensityMapPosterior:
         print("\nRanking by total DMP error (lower is better):")
         for rank, (method_name, errors) in enumerate(sorted_methods, 1):
             summary_items = []
+            per_cloud_errors = None
+            
             for key, value in errors.items():
-                if key == 'per_cloud_errors' or key == 'per_cloud_squared_errors':
+                if key == 'per_cloud_errors':
+                    per_cloud_errors = value
+                elif key == 'per_cloud_squared_errors':
                     pass
                 else:
-                    label = key.replace('_', ' ').title()
-
-                if isinstance(value, float):
-                    summary_items.append(f"{label}: {value:12.6f}")
+                    if isinstance(value, float):
+                        label = key.replace('_', ' ').title()
+                        summary_items.append(f"{label}: {value:12.2f}")
 
             print(f"  {rank}. {method_name:<25s} | {' | '.join(summary_items)}")
+            
+            # Print per-cloud errors in columns below
+            if per_cloud_errors:
+                print(f"      Per-cloud errors:")
+                for i, error in enumerate(per_cloud_errors):
+                    print(f"        Cloud {i}: {error:12.2f}")
 
-    def print_dmp_summary(self) -> None:
-        """Print detailed distance statistics for computed DMP distances."""
-        if not self.dmp_distances:
-            print("[WARN DMP] No distances computed yet. Run compute_all_dmp_distances() first.")
-            return
-
-        print("\n" + "=" * 70)
-        print("DMP Distance Detail Summary")
-        print("=" * 70)
-        for method_name, distance_list in self.dmp_distances.items():
-            print(f"\nMethod: {method_name}")
-            print(f"{'Cloud':>8s} | {'Count':>10s} | {'Mean':>12s} | {'StdDev':>12s} | {'Min':>12s} | {'Max':>12s}")
-            print("-" * 80)
-            for idx, distances in enumerate(distance_list):
-                d = np.asarray(distances, dtype=float)
-                if d.ndim == 2 and d.shape[1] == 3:
-                    d = np.linalg.norm(d, axis=1)
-                stats = scipy.stats.describe(d, nan_policy='omit')
-                count, (minn, maxx), mean, stddev, skew, kurt = stats
-                print(f"{f'M_{idx}':>8s} | {count:10d} | {mean:12.6g} | {stddev:12.6g} | {minn:12.6g} | {maxx:12.6g}")
-
-    def plot_dmp_per_cloud(self, method_name: str | None = None, figsize: tuple[int, int] = (8, 4), ax: plt.Axes | None = None) -> plt.Figure | None:
+    def plot_deltas(self, method_name: str | None = None, figsize: tuple[int, int] = (8, 4), ax: plt.Axes | None = None) -> plt.Figure | None:
         """
         Plot per-cloud DMP squared errors for one or all methods.
 
@@ -683,7 +699,7 @@ class DensityMapPosterior:
             y = np.asarray(errors, dtype=float)
             x = np.arange(len(y))
 
-            total = self.dmp_errors[method].get('DMP metric (squared_total_error)', None)
+            total = self.dmp_errors[method].get('DMP metric', None)
             label = method if total is None else f"{method} (total={total:.6g})"
 
             ax.plot(x, y, marker='o', linestyle='-', linewidth=1.2, markersize=6, label=label)
@@ -707,7 +723,7 @@ class DensityMapPosterior:
 
         return fig
 
-    def plot_dmp_histograms(
+    def plot_histograms(
         self,
         method_name: str | None = None,
         bins: int | str = 'auto',
@@ -717,22 +733,22 @@ class DensityMapPosterior:
         Plot histograms for stored DMP distances per point cloud.
 
         If `method_name` is None, produces one figure per method in
-        ``self.dmp_distances`` (each figure contains m histograms for m point
+        ``self.deltas`` (each figure contains m histograms for m point
         clouds). Returns a dict mapping method->Figure.
         """
-        if not self.dmp_distances:
-            print("[WARN DMP] No distances computed yet. Run compute_all_dmp_distances() first.")
+        if not self.deltas:
+            print("[WARN DMP] No distances computed yet. Run compute_all_deltas() first.")
             return None
 
-        methods = [method_name] if method_name else list(self.dmp_distances.keys())
+        methods = [method_name] if method_name else list(self.deltas.keys())
         figs: dict[str, plt.Figure] = {}
 
         for method in methods:
-            if method not in self.dmp_distances:
+            if method not in self.deltas:
                 print(f"[WARN DMP] Method '{method}' not found. Skipping.")
                 continue
 
-            distance_list = self.dmp_distances[method]
+            distance_list = self.deltas[method]
             m = len(distance_list)
             if m == 0:
                 print(f"[WARN DMP] No distance arrays for method '{method}'. Skipping.")
@@ -769,7 +785,7 @@ class DensityMapPosterior:
         return figs
 
 
-class CAD:
+class CAD(Comparator):
     """
     Comparison class between stitched_results and a cad file (pointcloud of mesh)
 
@@ -779,51 +795,34 @@ class CAD:
         inside a radius R, compute the mean of that neighbourhood, and return
         the vector difference between the point and that mean.
     """
-    @sutils.ensure_stitched_result_dict
-    def __init__(self, stitched_results: dict[str, tuple[np.ndarray, list[np.ndarray]]], cad_points: np.ndarray):
-        self.stitched_results = stitched_results
+    def __init__(self, stitched_results: dict[str, tuple[np.ndarray, list[np.ndarray]]], cad_points: np.ndarray, pipeline: spipe.TreePipeline, pipeline_path: str, names=None):
         self.cad_points = cad_points
-        self.deltas_cad = {}
+
+        self.pipeline = pipeline
+        self.pipeline_path = pipeline_path
 
         self.stitched_aligned_to_cad = {}
+        super().__init__(self._ensure_stitched_result_dict(stitched_results, names))
 
-    def align_cad_to_stitched(self, pipeline: spipe.TreePipeline, pipe_path: str, bplt: bool = False):
+    def align_cad_to_stitched(self, bplt: bool = False):
         """
         Align the CAD point cloud to the stitched surface using a registration pipeline
         """
+        base_pipe_name = self.pipeline.name
+
         for method_name, restuple in self.stitched_results.items():
             stitched, _ = restuple
-            pipeline.name = f'{method_name}_{pipeline.name}'
-            aligned_cad = pipeline.run([self.cad_points, stitched], save_transforms_root=pipe_path, bplt=bplt)
+            self.pipeline.name = f'{method_name}_{base_pipe_name}'
+            aligned_cad = self.pipeline.run([self.cad_points, stitched], save_transforms_root=self.pipeline_path, bplt=bplt)
 
             if not aligned_cad:
-                print(f"[WARN CAD] First run of pipeline {pipeline.name} rerun with saved pipe to continue")
+                print(f"[WARN CAD] First run of pipeline {self.pipeline.name} rerun with saved pipe to continue")
                 continue
             
             self.stitched_aligned_to_cad[method_name] = aligned_cad
-
         
-
-
-    # def compute_all_deltas_cad(self):
-    #     for method_name, restuple in self.stitched_aligned_to_cad.items():
-    #         stitched, _ = restuple
-    #         cR = make_compute_R([stitched])  # compute R based on the stitched surface itself
-    #         self.deltas_cad[method_name] = compute_deltas(stitched, lambda: cR())
-
-    def plot_deltas_cad(self, method_name: str, noise_threshold: float, figsize: tuple[int, int] = (10, 6)) -> plt.Figure | None:
-        if method_name not in self.deltas_cad:
-            print(f"[WARN CAD] Method '{method_name}' not found in computed deltas. Run compute_all_deltas_cad() first.")
-            return None
-
-        deltas = self.deltas_cad[method_name]
-        fig, axes = plt.subplots(1, 4, figsize=figsize)
-        _plot_row(axes, deltas, noise_threshold, f"{method_name} vs CAD", 'C1')
-        fig.suptitle(f"Deltas to CAD comparison for {method_name}\n(noise threshold = {noise_threshold:.3g})", fontsize=11)
-        return fig
-        
-    def compare_CAD_stitched(self, pipe_CAD, pipe_path):
-        self.align_cad_to_stitched(pipe_CAD, pipe_path, bplt=False)
+    def compute(self):
+        self.align_cad_to_stitched(bplt=False)
 
         for key in self.stitched_aligned_to_cad:
             bq = BallQuery(self.stitched_aligned_to_cad[key])
