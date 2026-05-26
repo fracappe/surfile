@@ -41,6 +41,44 @@ except ImportError:
 
 
 ############## point cloud file management ############
+def open_pc_from_file(path: str, NM='remove', userscales=[1, 1, 1], downsample=1) -> np.ndarray:
+    if path.endswith('.txt'):
+        with open(path) as f_tmp:
+            test = f_tmp.readline()
+            test = test.strip()
+            parts = re.split(r"[,\s;]+", test)
+
+            if len(parts) >= 3:
+                if not (len(parts[0]) == len(parts[1]) and len(parts[1]) == len(parts[2])):
+                    print("Warning: it might not be a point cloud")
+                if len(parts) > 3:
+                    print("Warning: more than 3 columns detected, only the first three will be used")
+
+                pc = np.genfromtxt(path, unpack=False, usecols=(0, 1, 2), delimiter=detect_csv_separator(path))
+            else:
+                raise IndexError(f"File {path} does not have at least 3 columns for x, y, z coordinates.")
+
+    elif path.endswith(".npy"):
+        pc = np.load(path, allow_pickle=True)
+    
+    elif path.endswith('.stl'):
+        mesh = o3d.io.read_triangle_mesh(path)
+        pc = np.asarray(mesh.vertices)
+    else:
+        raise TypeError("Unsupported file type...")
+
+    if NM == 'remove': pc = pc[~np.isnan(pc[:, 2])]
+    elif NM == 'keep': pass
+    elif NM == 'fill': pc[:, 2][np.isnan(pc[:, 2])] = np.nanmean(pc[:, 2])
+
+    pc[:, 0]  *= userscales[0]
+    pc[:, 1]  *= userscales[1]
+    pc[:, 2]  *= userscales[2]
+
+    pc = pc[::downsample]
+
+    return pc
+
 def open_pc_from_dir(path: str, NM='remove', userscales=[1, 1, 1], downsample=1, resave={'resave': False, 'resample': 10}) -> np.ndarray:
 
     pc_list = []
@@ -53,39 +91,7 @@ def open_pc_from_dir(path: str, NM='remove', userscales=[1, 1, 1], downsample=1,
         print(f)
 
         try:
-            if f.endswith('.txt'):
-                with open(full_path) as f_tmp:
-                    test = f_tmp.readline()
-                    test = test.strip()
-                    parts = re.split(r"[,\s;]+", test)
-
-                    if len(parts) == 3:
-                    
-                        if not (len(parts[0]) == len(parts[1]) and len(parts[1]) == len(parts[2])):
-                            print("Warning: it might not be a point cloud")
-
-                        pc = np.genfromtxt(full_path, unpack=False, usecols=(0, 1, 2), delimiter=detect_csv_separator(full_path))
-                    else:
-                        raise IndexError(f"File has {len(parts)} columns...")
-
-            elif f.endswith(".npy"):
-                pc = np.load(full_path, allow_pickle=True)
-            
-            elif f.endswith('.stl'):
-                mesh = o3d.io.read_triangle_mesh(full_path)
-                pc = np.asarray(mesh.vertices)
-            else:
-                raise TypeError("Unsupported file type...")
-
-            if NM == 'remove': pc = pc[~np.isnan(pc[:, 2])]
-            elif NM == 'keep': pass
-            elif NM == 'fill': pc[:, 2][np.isnan(pc[:, 2])] = np.nanmean(pc[:, 2])
-
-            pc[:, 0]  *= userscales[0]
-            pc[:, 1]  *= userscales[1]
-            pc[:, 2]  *= userscales[2]
-
-            pc = pc[::downsample]
+            pc = open_pc_from_file(full_path, NM=NM, userscales=userscales, downsample=downsample)
 
             pc_list.append(pc)
 

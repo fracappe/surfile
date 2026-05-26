@@ -1,3 +1,5 @@
+import ctypes
+
 import open3d as o3d
 import numpy as np
 import matplotlib.pyplot as plt
@@ -62,8 +64,23 @@ def get_rgb_from_3d_weights(weights: np.ndarray):
     rgb = norm_weights  # Directly use normalized weights as RGB values
     return rgb
 
+def _compute_window_grid(n_windows: int) -> tuple[int, int]:
+    """Compute a near-square grid layout for the given number of windows."""
+    if n_windows <= 0:
+        return 1, 1
+
+    best = None
+    for cols in range(1, n_windows + 1):
+        rows = int(np.ceil(n_windows / cols))
+        score = (abs(rows - cols), rows * cols)
+        if best is None or score < best[0]:
+            best = (score, cols, rows)
+
+    _, cols, rows = best
+    return rows, cols
+
 @sutils.ensure_o3d_pc
-def show_point_clouds(point_clouds: list[o3d.geometry.PointCloud], colors="normal"):
+def show_point_clouds(point_clouds: list[o3d.geometry.PointCloud], colors="normal", name="Point Cloud", position='auto'):
     """
     Visualize a list of point clouds in a single Open3D window.
 
@@ -76,14 +93,19 @@ def show_point_clouds(point_clouds: list[o3d.geometry.PointCloud], colors="norma
         `assign_defined_colors_to_point_clouds` for available options.
         If None, the original colors of the point clouds are used.
         Defaults to "normal".
-
+    position : tuple[int, int, int, int] or 'auto', optional
+        The window position and size as (left, top, width, height).
+        If 'auto', a default fixed position/size is used.
     """
     if colors is not None:
         point_clouds = assign_defined_colors_to_point_clouds(point_clouds, colors=colors)
-    o3d.visualization.draw_geometries(point_clouds, point_show_normal=False)
+
+    pos: tuple[int, int, int, int] = (50, 50, 800, 600) if position == 'auto' else position
+    o3d.visualization.draw_geometries(point_clouds, point_show_normal=False, window_name=name, width=pos[2], height=pos[3], left=pos[0], top=pos[1])
+    ctypes.windll.user32.SetProcessDPIAware()  # Ensure DPI awareness for correct window sizing on high-DPI displays
 
 @sutils.ensure_o3d_pc
-def compare_point_clouds(pc_lists: list[list[o3d.geometry.PointCloud]], colors="normal"):
+def compare_point_clouds(pc_lists: list[list[o3d.geometry.PointCloud]], colors="normal", names: None | list[str] = None):
     """
     Compare multiple lists of point clouds, each in a separate window.
 
@@ -99,19 +121,54 @@ def compare_point_clouds(pc_lists: list[list[o3d.geometry.PointCloud]], colors="
         The coloring scheme(s) to apply. If a single string, the same scheme
         is applied to all windows. If a list of strings, each window gets
         the corresponding color scheme from the list. Defaults to "normal".
-
+        Available: "normal", "betternormal", "uniform", or any Matplotlib colormap name.
+    names : None | list[str], optional
+        A list of names for the visualization windows. If None, default names
+        will be used. Defaults to None.
     """
     procs = []
-    if type(colors) == str: colors = [colors for _ in range(len(pc_lists))]
-    print(f"[INFO COMPARE PLOT] Plotting comparisons in multiple processes")
+    if type(colors) == str:
+        colors = [colors for _ in range(len(pc_lists))]
+
+    if names is None:
+        names = [f"Window {i + 1}" for i in range(len(pc_lists))]
+    elif len(names) < len(pc_lists):
+        names = list(names) + [f"Window {i + 1}" for i in range(len(names), len(pc_lists))]
+
+    
+    scale_factor = ctypes.windll.shcore.GetScaleFactorForDevice(0) / 100
+
+    screen_width = int(ctypes.windll.user32.GetSystemMetrics(0))
+    screen_height = int(ctypes.windll.user32.GetSystemMetrics(1))
+
+    print(f"[INFO COMPARE PLOT] Detected screen resolution: {screen_width}x{screen_height} (scale factor: {scale_factor:.2f})")
+
+    rows, cols = _compute_window_grid(len(pc_lists))
+
+    margin = 20
+    window_width = (screen_width - (cols + 1) * margin) // cols
+    window_height = (screen_height - (rows + 1) * margin) // rows
+
+    positions = []
+    for index in range(len(pc_lists)):
+        row = index // cols
+        col = index % cols
+        left = margin + col * (window_width + margin)
+        top = margin + row * (window_height + margin)
+        positions.append((left, top, window_width, window_height))
+
+    print(f"[INFO COMPARE PLOT] Plotting {len(pc_lists)} windows in a {rows}x{cols} grid")
 
     for i, pc_list in enumerate(pc_lists):
-        p = mp.Process(target=show_point_clouds, args=(pc_list, colors[i]))
+        p = mp.Process(
+            target=show_point_clouds,
+            args=(pc_list, colors[i], names[i], positions[i])
+        )
         p.start()
-
         procs.append(p)
-    
-    for p in procs: p.join()
+
+    for p in procs:
+        p.join()
 
 @sutils.ensure_o3d_pc
 def color_points_from_closest_triangle_normal(pcd: o3d.geometry.PointCloud, method: str = "poisson", depth: int = 8, alpha: float = 1.0, orient_k: int = 30, remove_low_density: bool = True, density_quantile: float = 0.02):

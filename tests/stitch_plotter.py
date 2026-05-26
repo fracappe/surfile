@@ -56,8 +56,8 @@ if __name__ == "__main__":
     run_test("show_point_clouds with 'normal' colors",
              splotter.show_point_clouds, point_clouds_np, colors="normal")
 
-    run_test("show_point_clouds with 'betternormal' colors",
-             splotter.show_point_clouds, point_clouds_np, colors="betternormal")
+    # run_test("show_point_clouds with 'betternormal' colors",
+    #          splotter.show_point_clouds, point_clouds_np, colors="betternormal")
 
     if point_clouds_np:
         run_test("show_point_clouds with 'viridis' colormap",

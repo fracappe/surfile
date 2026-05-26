@@ -10,3 +10,4 @@ ScreenCapture*
 DepthCamera*
 DepthCapture*
 *.pkl
+.vscode/   

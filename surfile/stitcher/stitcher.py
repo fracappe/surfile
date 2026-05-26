@@ -417,7 +417,7 @@ class Isolator():
 
     type: str
 
-    def __init__(self, type: str, stitchprc=80, max_distance=None, axes='xyz'):
+    def __init__(self, type: str, stitchprc=80, max_distance=[0.0], axes='xyz'):
         """
         Initializes the Isolator with a specific strategy and its parameters.
 
@@ -428,9 +428,9 @@ class Isolator():
             'maxmin', 'KDTree', 'manual', or 'convex_hull'.
         stitchprc : int, optional
             Percentage of overlap for the 'geometrical' method. Defaults to 80.
-        max_distance : float or None, optional
-            Maximum distance threshold for the 'KDTree' method. If None, it is
-            estimated automatically. Defaults to None.
+        max_distance : list
+            The distance threshold. It is a return value by reference (as a single-item list) to allow modification. 
+            It is estimated automatically from the distance histogram. Defaults to 0.
         axes : str, optional
             Axes to consider for the 'maxmin' bounding box. Defaults to 'xyz'.
         """
@@ -579,7 +579,7 @@ class Isolator():
         return fixed_subset, moving_subset
 
     @staticmethod
-    def isolate_common_points_kdtree(fixed_pts: np.ndarray, moving_pts: np.ndarray, max_distance: float=None, bins_after_max=1, bplt=False):
+    def isolate_common_points_kdtree(fixed_pts: np.ndarray, moving_pts: np.ndarray, max_distance: list=[0.0], percentile=30, bplt=False):
         """
         Isolate points based on nearest neighbor distances.
 
@@ -597,8 +597,8 @@ class Isolator():
         moving_pts : np.ndarray
             The (M, 3) moving point cloud.
         max_distance : float or None, optional
-            The distance threshold. Points further than this from the other
-            cloud are discarded. If None, it's estimated. Defaults to None.
+            The distance threshold. It is a return value by reference (as a single-item list) to allow modification. 
+            It is estimated automatically from the distance histogram. Defaults to 0.
         bins_after_max : int, optional
             When estimating `max_distance`, this is the number of bins after
             the histogram's peak to set the threshold. Defaults to 1.
@@ -616,27 +616,29 @@ class Isolator():
         dist_f2m, _ = A_to_B(fixed_pts, moving_pts)
         dist_m2f, _ = A_to_B(moving_pts, fixed_pts)
 
-        if max_distance is None:
-            dist_hist, dist_bins = np.histogram(np.hstack((dist_f2m, dist_m2f)), 50)
+        dist_hist, dist_bins = np.histogram(np.hstack((dist_f2m, dist_m2f)), bins='fd')
 
-            max_distance = dist_bins[np.nanargmax(dist_hist) + bins_after_max]
+        md = np.percentile(np.hstack((dist_f2m, dist_m2f)), percentile)
 
-            if False:
-                fig, ax = plt.subplots()
+        if False:
+            fig, ax = plt.subplots()
 
-                ax.hist(dist_f2m, bins=50, alpha=0.5, label="fixed → moving")
-                ax.hist(dist_m2f, bins=50, alpha=0.5, label="moving → fixed")
+            ax.hist(dist_f2m, bins='auto', alpha=0.5, label="fixed → moving")
+            ax.hist(dist_m2f, bins='auto', alpha=0.5, label="moving → fixed")
 
-                ax.hist(np.hstack((dist_f2m, dist_m2f)), bins=50, alpha=0.5, label="all")
-                ax.vlines([max_distance], 0, np.nanmax(dist_hist), label='max distance')
+            ax.hist(np.hstack((dist_f2m, dist_m2f)), bins='auto', alpha=0.5, label="all")
+            ax.vlines([md], 0, np.nanmax(dist_hist), label='max distance')
 
-                ax.set_xlabel("Distance")
-                ax.set_ylabel("Count")
-                
-                plt.show()
+            ax.set_xlabel("Distance")
+            ax.set_ylabel("Count")
+            
+            plt.legend()
+            plt.show()
 
-        fixed_subset = fixed_pts[dist_f2m <= max_distance]
-        moving_subset = moving_pts[dist_m2f <= max_distance]
+        fixed_subset = fixed_pts[dist_f2m <= md]
+        moving_subset = moving_pts[dist_m2f <= md]
+
+        max_distance[0] = md
 
         if bplt:
             Isolator.plot_isolated_areas(fixed_subset, moving_subset, fixed_pts, moving_pts)
@@ -747,7 +749,7 @@ class Isolator():
             vis.add_geometry(pcd_o3d)
 
             render_option = vis.get_render_option()
-            render_option.point_size = 2
+            render_option.point_size = 10
 
             vis.run()
             vis.destroy_window()
@@ -1221,6 +1223,9 @@ class SurfaceStitcher:
 
             trans_init = np.eye(4)
             threshold = thresholder.apply_thresholder(fixed_subset, moving_subset)
+            if threshold == 0:
+                print("[WARNING ICP] Threshold is 0, setting to 1 to avoid errors")
+                threshold = 1
             print(f'{threshold=}')
 
             reg_p2p = o3d.pipelines.registration.registration_icp(
@@ -1452,7 +1457,7 @@ class SurfaceStitcher:
             # selected_points_m = (temp[:, 0] >= fixed_pts[:, 0].min()) & (temp[:, 0] <= fixed_pts[:, 0].max()) & (temp[:, 1] >= fixed_pts[:, 1].min()) & (temp[:, 1] <= fixed_pts[:, 1].max())
             # tz = np.median(fixed_pts[selected_points_f, 2]) - np.median(temp[selected_points_m, 2])
 
-            fix_sub, temp_sub = isolator.isolate_common_points_kdtree(fixed_pts, aligned, bins_after_max=1, bplt=True)
+            fix_sub, temp_sub = isolator.isolate_common_points_kdtree(fixed_pts, aligned, percentile=50, bplt=True)
             tz = np.nanmean(fix_sub[:, 2]) - np.nanmean(temp_sub[:, 2])
 
             aligned[:, 2] += tz
