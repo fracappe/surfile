@@ -875,6 +875,7 @@ class SurfaceStitcher:
         """
 
         transforms_folder = Path(transforms_folder)
+        if not transforms_folder.exists(): raise NameError(f'[ERROR SAVED_TRANSFORMS] Folder {transforms_folder} does not exist')
 
         transform_files = sorted(
             transforms_folder.glob("*.pkl"),
@@ -909,7 +910,7 @@ class SurfaceStitcher:
         if bplt:
             splotter.compare_point_clouds([[fixed], point_clouds_T], ["normal", "uniform"])
 
-        return fixed, point_clouds_T
+        return fixed, point_clouds_T, loaded_transforms_params
 
     @staticmethod
     @sutils.ensure_numpy_pcd

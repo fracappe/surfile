@@ -6,17 +6,29 @@ import pickle
 import numpy as np
 from datetime import datetime
 
+def _prompt_user_for_run_choice(past_runs):
+        for i, run in enumerate(past_runs):
+            print(f"{i}: {run}")
+        print(f"{len(past_runs)}: Run new")
+        
+        while True:
+            choice = input(f"Select a past run to apply or run new (0-{len(past_runs)}): ")
+            if choice.isdigit():
+                choice_idx = int(choice)
+                if 0 <= choice_idx <= len(past_runs):
+                    return past_runs[choice_idx] if choice_idx < len(past_runs) else None
+            print("Invalid input. Please enter a number corresponding to the options above.")
+
+
 class PipelineStep:
     f: callable
-    t: list
     
-    def __init__(self, f, name=None, **kwargs):
+    def __init__(self, f, name=None, recall_from_passtrough=None, **kwargs):
         self.f = f
         self.name = name
         self.kwargs = kwargs
-        self.t = []
+        self.pt_name = recall_from_passtrough
         self.children = []
-        print(f'[INFO PIPELINE] Created step with function {f.__name__}')
         
     def add_child(self, step):
         if not isinstance(step, PipelineStep):
@@ -55,7 +67,11 @@ class PipelineStep:
         self._check_arguments()
         self._check_all_leaves_have_name()
         if bplt_override: self.kwargs['bplt'] = bplt_override
-        fixed, next_pcs, local_transforms = self.f(pcs, **self.kwargs)
+        
+        if self.pt_name is not None:
+            fixed, next_pcs, local_transforms = self._recall_from_passtrough(pcs, base_save_path, self.kwargs['bplt'])
+        else:
+            fixed, next_pcs, local_transforms = self.f(pcs, **self.kwargs)
         
         new_global_transforms = [T_local @ T for T, T_local in zip(current_transforms, local_transforms)]
 
@@ -73,9 +89,35 @@ class PipelineStep:
         for i, T in enumerate(transforms):
             with open(os.path.join(save_folder, f"{i}.pkl"), "wb") as f:
                 pickle.dump(T, f)
+                
+    def _recall_from_passtrough(self, pcs, base_save_path, bplt=False):
+        if base_save_path is None: raise ValueError("[ERROR PIPELINE] Base save path must be set for search por previous passtrough calls")
+        # walk all subdirs and ask user which past passtrough to use instead
+        past_pt = []
+        # remove from base_save_path all after folder pipelines: ...\\pipelines\\{remove part}
+        marker = 'pipelines\\'
+        base_pipelines_path = base_save_path.split(marker)[0] + marker
+
+        for dirpath, dirname, filenames in os.walk(base_pipelines_path):
+            if self.pt_name in dirname:
+                dir_name_past_base = dirpath.replace(base_pipelines_path, '')
+                past_pt.append(dir_name_past_base)
+        
+        print(f'[INFO PIPELINE] Found {len(past_pt)} past runs for passtrough {self.pt_name}.')
+        if past_pt:
+            choice = _prompt_user_for_run_choice(past_pt)
+            
+            if choice is not None:
+                subdir = os.path.join(base_pipelines_path, choice, self.pt_name)
+                print(base_pipelines_path, choice, self.pt_name)
+                print(f'[INFO PIPELINE] Running past passtrough from: {subdir}')
+                return sst.SurfaceStitcher.stitchSavedTransforms(pcs, subdir, bplt=bplt)
+        
+        print(f'[INFO PIPELINE] Starting new step: {self.name}')  
+        return self.f(pcs, **self.kwargs)
 
     @classmethod
-    def pass_through(cls, name): # it must return the same shape as the stitcher functions, so that it can be used as a PipelineStep function: fixed, point_clouds_T, transforms_matrices
+    def pass_through(cls, name):
         def f(point_clouds: list[np.ndarray]):
             fixed = np.vstack(point_clouds)
             return fixed, point_clouds, [np.eye(4) for _ in point_clouds]
@@ -94,15 +136,15 @@ class TreePipeline:
         # if save_transforms_root is not a folder but a file only consider the base path
         save_transforms_root = os.path.dirname(save_transforms_root) if os.path.isfile(save_transforms_root) else save_transforms_root
         base_save_path = os.path.join(
-            save_transforms_root, 
-            'pipelines', 
+            save_transforms_root,
+            'pipelines',
             f"{self.name}_{self.timestamp}"
         )
         
         past_runs = self._check_for_past_runs(save_transforms_root)
         print(f'[INFO PIPELINE] Found {len(past_runs)} past runs for pipeline "{self.name}".')
         if past_runs:
-            choice = self._prompt_user_for_run_choice(past_runs)
+            choice = _prompt_user_for_run_choice(past_runs)
             if choice is None: # make a new run
                 pass
 
@@ -126,26 +168,12 @@ class TreePipeline:
                 past_runs.append(subdir)
                 
         return past_runs
-    
-    def _prompt_user_for_run_choice(self, past_runs):
-        print(f"Found {len(past_runs)} past runs for pipeline '{self.name}':")
-        for i, run in enumerate(past_runs):
-            print(f"{i}: {run}")
-        print(f"{len(past_runs)}: Run new pipeline")
-        
-        while True:
-            choice = input(f"Select a past run to apply or run new pipeline (0-{len(past_runs)}): ")
-            if choice.isdigit():
-                choice_idx = int(choice)
-                if 0 <= choice_idx <= len(past_runs):
-                    return past_runs[choice_idx] if choice_idx < len(past_runs) else None
-            print("Invalid input. Please enter a number corresponding to the options above.")
             
     def _run_past_pipeline(self, pcs, past_run_folder, bplt=False):
         stitching_results = {}
 
         for subdir in os.listdir(past_run_folder):
-            fixed, next_pcs = sst.SurfaceStitcher.stitchSavedTransforms(pcs, os.path.join(past_run_folder, subdir), bplt=bplt)
+            fixed, next_pcs, _ = sst.SurfaceStitcher.stitchSavedTransforms(pcs, os.path.join(past_run_folder, subdir), bplt=bplt)
             stitching_results[subdir] = (fixed, next_pcs)
         return stitching_results
     

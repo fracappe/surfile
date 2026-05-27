@@ -219,9 +219,10 @@ class Comparator:
         Print a summary of delta statistics for all methods.
         For each method, prints the scipy stats describe of |Δ|, Δx, Δy, Δz in a pretty format.
         """
-        print("\n" + "=" * 70)
-        print("Ball Query Statistics Summary")
-        print("=" * 70)
+        if self.deltas:
+            print("\n" + "=" * 70)
+            print("Ball Query Statistics Summary")
+            print("=" * 70)
         for method_name, delta_data in self.deltas.items():
             mod = _modulus(delta_data)
             stats_mod = scipy.stats.describe(mod, nan_policy='omit')
@@ -827,5 +828,6 @@ class CAD(Comparator):
         for key in self.stitched_aligned_to_cad:
             bq = BallQuery(self.stitched_aligned_to_cad[key])
             bq.plot_deltas(noise_threshold=0.5)
+            bq.plot_histograms(noise_threshold=0.5)
             bq.colormap_deltas(mode='xyz')
             bq.print_summary()

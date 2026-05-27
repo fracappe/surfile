@@ -143,7 +143,7 @@ def compare_point_clouds(pc_lists: list[list[o3d.geometry.PointCloud]], colors="
 
     print(f"[INFO COMPARE PLOT] Detected screen resolution: {screen_width}x{screen_height} (scale factor: {scale_factor:.2f})")
 
-    rows, cols = _compute_window_grid(len(pc_lists))
+    cols, rows = _compute_window_grid(len(pc_lists))
 
     margin = 20
     window_width = (screen_width - (cols + 1) * margin) // cols
