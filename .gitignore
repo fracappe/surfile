@@ -11,3 +11,4 @@ DepthCamera*
 DepthCapture*
 *.pkl
 .vscode/   
+logger/

@@ -13,7 +13,7 @@ compute_deltas(stitched, compute_R)
 plot_stitching_comparison(stitched_list, compute_R, noise_threshold,
                           labels=None, figsize_scale=5)
     Produce a diagnostic figure with
-      • one row per stitching method   – |Δ|, Δx, Δy, Δz
+      • one row per stitching method   – |$Delta$|, $Delta$x, $Delta$y, $Delta$z
       • one row per pair of methods    – same four quantities on the
                                          difference signal (method_i − method_j)
     Each subplot is annotated with the RMSE of the samples whose modulus
@@ -50,6 +50,8 @@ import matplotlib.gridspec as gridspec
 import numpy as np
 from scipy.spatial import cKDTree
 import open3d as o3d
+import pickle
+import os
 
 from surfile.stitcher import stitcher as sstitcher
 from surfile.stitcher import plotter as splotter
@@ -57,7 +59,7 @@ from surfile.stitcher import pipeline as spipe
 from surfile.stitcher import utils as sutils
 
 _COMPONENT_LABELS = ("x", "y", "z")
-_COL_TITLES = ("|Δ|", "Δx", "Δy", "Δz")
+_COL_TITLES = (fr"$\left|\Delta\right|$", r"$\Delta$x", r"$\Delta$y", r"$\Delta$z")
 
 def _modulus(arr: np.ndarray) -> np.ndarray:
     """Row-wise L2 norm of an (N, 3) array → (N,)."""
@@ -209,6 +211,7 @@ class Comparator:
         self.deltas = {}
 
         self.compute()
+        self.save_deltas()
 
     def compute(self):
         print("[Comparator] Base compute() method called. Override this method in subclasses to compute specific metrics.")
@@ -217,12 +220,25 @@ class Comparator:
     def print_summary(self):
         """
         Print a summary of delta statistics for all methods.
-        For each method, prints the scipy stats describe of |Δ|, Δx, Δy, Δz in a pretty format.
+        For each method, prints the scipy stats describe of |$Delta$|, $Delta$x, $Delta$y, $Delta$z in a pretty format.
         """
+
+        results = {}
+
         print("\n" + "=" * 70)
         print("Ball Query Statistics Summary")
         print("=" * 70)
         for method_name, delta_data in self.deltas.items():
+            
+            results[method_name] = {
+                "Component" :  [],
+                "Count" : [],
+                "Mean" : [],
+                "StdDev" : [],
+                "Min" : [],
+                "Max" : []
+            }
+
             mod = _modulus(delta_data)
             stats_mod = scipy.stats.describe(mod, nan_policy='omit')
             stats_x = scipy.stats.describe(delta_data[:, 0], nan_policy='omit')
@@ -234,20 +250,31 @@ class Comparator:
             print("-" * 120)
             for comp_label, stats in zip(_COL_TITLES, [stats_mod, stats_x, stats_y, stats_z]):
                 count, (minn, maxx), mean, stddev, skew, kurt = stats
+
+                results[method_name]["Component"].append(comp_label)
+                results[method_name]["Count"].append(count)
+                results[method_name]["Mean"].append(mean)
+                results[method_name]["StdDev"].append(stddev)
+                results[method_name]["Min"].append(minn)
+                results[method_name]["Max"].append(maxx)
+
                 print(f"{comp_label:>10s} | {count:10d} | {mean:12.6g} | {stddev:12.6g} | {minn:12.6g} | {maxx:12.6g}")
+
+
+        return results
 
     def plot_deltas(self, noise_threshold: float, labels: Sequence[str] | None = None, figsize_scale: float = 5.0) -> plt.Figure:
         """Generate diagnostic comparison figure for stitching methods.
         
         Produces a figure with one row per stitching method and one row per
-        pair of methods, showing |Δ|, Δx, Δy, Δz with RMSE annotations.
+        pair of methods, showing |$Delta$|, $Delta$x, $Delta$y, $Delta$z with RMSE annotations.
         
         Parameters
         ----------
         noise_threshold : float
             Threshold value for RMSE annotation of outliers.
         labels : sequence[str], optional
-            Labels for each stitching method. If None, uses "Method 0", "Method 1", etc.
+            Labels for each stitching method. If None, it uses self.stitched_results.keys()
         figsize_scale : float, optional
             Scaling factor for figure size (default: 5.0).
         
@@ -256,6 +283,7 @@ class Comparator:
         Figure
             The matplotlib figure object, or None if deltas haven't been computed.
         """
+        if labels is None: labels = list(self.stitched_results.keys())
         return _plot_comparison_figure(
             self.stitched_results,
             self.deltas,
@@ -289,7 +317,7 @@ class Comparator:
         ----------
         mode : str, optional
             Coloring mode:
-            - 'modulus' (default): color by |Δ|
+            - 'modulus' (default): color by |$Delta$|
             - 'x', 'y', 'z': color by component
             - 'xyz': color by 3D RGB weights
         """
@@ -359,7 +387,7 @@ class Comparator:
             name: (stitched_results, [stitched_results])
         }
     
-    def save_deltas(self, filepath: str):
+    def save_deltas(self):
         pass
     
 
@@ -463,8 +491,13 @@ class BallQuery(Comparator):
     """
     A class to encapsulate the comparison of stitching results.
     """
-    def __init__(self, stitched_results: dict[str, tuple[np.ndarray, list[np.ndarray]]]):
+    def __init__(self, save_path: str, stitched_results: dict[str, tuple[np.ndarray, list[np.ndarray]]]):
+        self.save_path = save_path
         super().__init__(stitched_results)
+
+    @staticmethod
+    def return_empty_instance():
+        return BallQuery.__new__(BallQuery)
 
     def compute(self):
         """Compute local-mean residuals for all stitching methods.
@@ -476,6 +509,15 @@ class BallQuery(Comparator):
             stitched, stitched_T = restuple
             cR = make_compute_R(stitched_T)
             self.deltas[method_name] = compute_deltas(stitched, cR)
+
+    def save_deltas(self):
+        if not self.save_path is None:
+            os.makedirs(os.path.dirname(self.save_path), exist_ok=True)
+            with open(self.save_path, "wb") as f:
+                pickle.dump({
+                    "deltas": self.deltas,
+                    "errors": self.dmp_errors if hasattr(self, 'dmp_errors') else None,
+                }, f)
 
  
 def compute_distances_T(
@@ -534,8 +576,11 @@ class DensityMapPosterior():
     """
     A class to evaluate stitching quality using the Dense Map Posterior method.
     """
-    def __init__(self, stitched_results: dict[str, tuple[np.ndarray, list[np.ndarray]]], 
+    def __init__(self, save_path: str, stitched_results: dict[str, tuple[np.ndarray, list[np.ndarray]]], 
                  distance_function: Callable[[np.ndarray, np.ndarray], np.ndarray] | None = None): 
+        
+        self.save_path = save_path
+
         if distance_function is None:
             self.distance_function = sstitcher.KDTree_mutual_diffs
         else:
@@ -548,6 +593,12 @@ class DensityMapPosterior():
 
         self.dmp_errors = {}
         self.compute_all_dmp_errors()
+        
+        self.save_deltas()
+
+    @staticmethod
+    def return_empty_instance():
+        return DensityMapPosterior.__new__(DensityMapPosterior)
 
     def compute(self) -> None:
         """
@@ -621,12 +672,30 @@ class DensityMapPosterior():
                 'squared_error_per_cloud': float(squared_error_per_cloud),
                 'DMP metric': float(squared_total_error)
             }
+
+    def save_deltas(self):
+        if not self.save_path is None:
+            os.makedirs(os.path.dirname(self.save_path), exist_ok=True)
+            with open(self.save_path, "wb") as f:
+                pickle.dump({
+                    "deltas": self.deltas,
+                    "errors": self.dmp_errors if hasattr(self, 'dmp_errors') else None,
+                }, f)
     
     def print_summary(self) -> None:
         """Print a summary of DMP errors for all methods."""
         if not self.dmp_errors:
             print("[WARN DMP] No errors computed yet. Run compute_all_dmp_errors() first.")
             return
+
+        results = {
+            "general_data" : {
+                " " : []
+            },
+            "per_cloud_data" : {
+                " " : []
+            }
+        }
 
         print("\n" + "=" * 70)
         print("DMP Evaluation Summary")
@@ -643,15 +712,26 @@ class DensityMapPosterior():
             summary_items = []
             per_cloud_errors = None
             
+            results["per_cloud_data"][" "].append(method_name.replace('_', '\\_'))
+
             for key, value in errors.items():
                 if key == 'per_cloud_errors':
                     per_cloud_errors = value
+
+                    for i, error in enumerate(per_cloud_errors):
+                        results["per_cloud_data"].setdefault(f"Cloud {i}", []).append(error)
+
                 elif key == 'per_cloud_squared_errors':
                     pass
                 else:
                     if isinstance(value, float):
                         label = key.replace('_', ' ').title()
                         summary_items.append(f"{label}: {value:12.2f}")
+                    
+                        results["general_data"].setdefault(f"{label.replace('_', '\\_')}", []).append(value)
+
+
+            results["general_data"][" "].append(method_name.replace('_', '\\_')) 
 
             print(f"  {rank}. {method_name:<25s} | {' | '.join(summary_items)}")
             
@@ -660,6 +740,8 @@ class DensityMapPosterior():
                 print(f"      Per-cloud errors:")
                 for i, error in enumerate(per_cloud_errors):
                     print(f"        Cloud {i}: {error:12.2f}")
+
+        return results
 
     def plot_deltas(self, method_name: str | None = None, figsize: tuple[int, int] = (8, 4), ax: plt.Axes | None = None) -> plt.Figure | None:
         """

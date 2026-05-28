@@ -51,19 +51,54 @@ class PipelineStep:
             for child in self.children:
                 child._check_all_leaves_have_name()
     
-    def run(self, pcs, current_transforms, base_save_path=None, bplt_override=False) -> None:
+    def run(self, pcs, current_transforms, base_save_path=None, bplt_override=False) -> dict[str, tuple[np.ndarray, list[np.ndarray]]]:
+        """
+        Execute this step and recursively all its children, collecting leaf results.
+
+        At each node the local transform returned by the stitching function is
+        composed with the accumulated global transform passed down from the
+        parent: T_global = T_local @ T_parent. This ensures that each leaf
+        stores the full transform chain from the original coordinate frame.
+
+        Parameters
+        ----------
+        pcs : list[np.ndarray]
+            Point clouds to process at this node.
+        current_transforms : list[np.ndarray]
+            Accumulated 4x4 global transforms from all ancestor steps.
+        base_save_path : str or None
+            Root folder under which leaf results are saved. If None, nothing
+            is written to disk.
+        bplt_override : bool
+            If True, forces bplt=True on this step's function call.
+
+        Returns
+        -------
+        dict[str, tuple[np.ndarray, list[np.ndarray]]]
+            Mapping of leaf name -> (stitched_fixed, transformed_point_clouds),
+            collected recursively from all reachable leaves.
+        """
         self._check_arguments()
         self._check_all_leaves_have_name()
-        if bplt_override: self.kwargs['bplt'] = bplt_override
+        if bplt_override: 
+            self.kwargs['bplt'] = bplt_override
+
         fixed, next_pcs, local_transforms = self.f(pcs, **self.kwargs)
-        
+
+        # Compose each local transform with the corresponding accumulated global
+        # transform so leaves always hold the full transform from the origin frame.
         new_global_transforms = [T_local @ T for T, T_local in zip(current_transforms, local_transforms)]
 
-        if not self.children and base_save_path is not None:
-            self._save(new_global_transforms, base_save_path, self.name)
-        else:
-            for child in self.children:
-                child.run(next_pcs, new_global_transforms, base_save_path)
+        if not self.children:
+            if base_save_path is not None:
+                self._save(new_global_transforms, base_save_path, self.name)
+            return {self.name: (fixed, next_pcs)}
+
+        leaf_results = {}
+        for child in self.children:
+            child_results = child.run(next_pcs, new_global_transforms, base_save_path)
+            leaf_results.update(child_results)
+        return leaf_results
 
     def _save(self, transforms, base_path, leaf_path_name):
         save_folder = os.path.join(base_path, leaf_path_name)
@@ -114,8 +149,9 @@ class TreePipeline:
         initial_transforms = [np.eye(4) for _ in pcs]
         print(f'[INFO PIPELINE] Starting new Tree Pipeline: {self.name}')
         for root in self.root_steps:
-            root.run(pcs, initial_transforms, base_save_path, bplt_override=bplt)
-            return stitching_results
+            root_results = root.run(pcs, initial_transforms, base_save_path, bplt_override=bplt)
+            stitching_results.update(root_results)
+        return stitching_results
             
     def _check_for_past_runs(self, save_transforms_root):        
         past_runs = []

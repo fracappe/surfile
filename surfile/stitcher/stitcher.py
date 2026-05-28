@@ -875,6 +875,7 @@ class SurfaceStitcher:
         """
 
         transforms_folder = Path(transforms_folder)
+        print(f"[INFO STITCH_SAVED_TRANSFORMS] Loading saved transform PKL files from: {transforms_folder}")
 
         transform_files = sorted(
             transforms_folder.glob("*.pkl"),
