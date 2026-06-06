@@ -346,38 +346,65 @@ def apply_transform(points: np.ndarray, params: TransformParams | np.ndarray, pa
     return (T @ pts_h.T).T[:, :3]
 
 
-def KDTree_mutual_diffs(fixed_points, moving_points):
-    """
-    Calculate the difference vectors between mutual nearest neighbors.
+# def KDTree_mutual_diffs(fixed_points, moving_points, k=1):
+#     """
+#     Calculate the difference vectors between mutual nearest neighbors.
 
-    This function finds pairs of points (one from `fixed_points`, one from
-    `moving_points`) that are each other's closest neighbor. It then returns
-    the difference vectors for these mutual pairs.
+#     This function finds pairs of points (one from `fixed_points`, one from
+#     `moving_points`) that are each other's closest neighbor. It then returns
+#     the difference vectors for these mutual pairs.
 
-    Parameters
-    ----------
-    fixed_points : np.ndarray
-        The (N, 3) fixed point cloud.
-    moving_points : np.ndarray
-        The (M, 3) moving point cloud.
+#     Parameters
+#     ----------
+#     fixed_points : np.ndarray
+#         The (N, 3) fixed point cloud.
+#     moving_points : np.ndarray
+#         The (M, 3) moving point cloud.
 
-    Returns
-    -------
-    np.ndarray
-        An (K, 3) array of difference vectors for the K mutual pairs found.
-        Returns `float('inf')` if no mutual pairs are found.
-    """
+#     Returns
+#     -------
+#     np.ndarray
+#         An (K, 3) array of difference vectors for the K mutual pairs found.
+#         Returns `float('inf')` if no mutual pairs are found.
+#     """
+#     fixed_tree = cKDTree(fixed_points)
+#     moving_tree = cKDTree(moving_points)
+
+#     dist_f2m, idx_f2m = moving_tree.query(fixed_points, k=k, workers= -1)
+#     dist_m2f, idx_m2f = fixed_tree.query(moving_points, k=k, workers= -1)
+
+#     selected_points = (np.arange(len(fixed_points)) == idx_m2f[idx_f2m])
+#     if not np.any(selected_points):
+#         return float('inf')
+
+#     diffs = fixed_points[selected_points] - moving_points[idx_f2m[selected_points]]
+#     return diffs
+
+def KDTree_mutual_diffs(fixed_points, moving_points, k=3):
+
     fixed_tree = cKDTree(fixed_points)
     moving_tree = cKDTree(moving_points)
 
-    dist_f2m, idx_f2m = moving_tree.query(fixed_points, k=1, workers= -1)
-    dist_m2f, idx_m2f = fixed_tree.query(moving_points, k=1, workers= -1)
+    _, idx_f2m = moving_tree.query(fixed_points, k=k, workers=-1)
+    
+    _, idx_m2f = fixed_tree.query(moving_points, k=k, workers=-1)
 
-    selected_points = (np.arange(len(fixed_points)) == idx_m2f[idx_f2m])
-    if not np.any(selected_points):
-        return float('inf')
+    neighbors_of_neighbors = idx_m2f[idx_f2m]
 
-    diffs = fixed_points[selected_points] - moving_points[idx_f2m[selected_points]]
+    N = len(fixed_points)
+    original_indices = np.arange(N)[:, np.newaxis, np.newaxis] # Shape: (N, 1, 1)
+    
+    valid_pairs = np.any(neighbors_of_neighbors == original_indices, axis=2)
+
+    if not np.any(valid_pairs):
+            return float('inf')
+
+    r_idx, c_idx = np.where(valid_pairs)
+
+    actual_fixed = fixed_points[r_idx]
+    actual_moving = moving_points[idx_f2m[r_idx, c_idx]]
+
+    diffs = actual_fixed - actual_moving
     return diffs
 
 
@@ -1107,7 +1134,7 @@ class SurfaceStitcher:
             List of 4x4 transformation matrices applied to each point cloud.
         """
         def optimize(fixed_pts, moving_pts):
-            U_tx, U_ty, U_tz = 56, 56, 56
+            U_tx, U_ty, U_tz = 140, 140, 140
             U_theta = 0.5
 
             # tx ty tz rx ry rz
@@ -1119,7 +1146,19 @@ class SurfaceStitcher:
 
                 fixed_sub, moved_sub = isolator.apply_isolator(fixed_pts, moved, bplt=False)
                 plt.show()
-                diffs = KDTree_mutual_diffs(fixed_sub, moved_sub)  # just use the dıfference, not the mutual kdtree
+                diffs = KDTree_mutual_diffs(fixed_sub, moved_sub, k=30)
+
+                # --- SAFETY GUARD FOR EMPTY OVERLAPS ---
+                # Check if diffs is a float (float('inf')) instead of a NumPy array
+                if not isinstance(diffs, np.ndarray):
+                    # Assign a large penalty value. Adjust this if your typical RMSE is close to 10k.
+                    penalty_rmse = 10000.0 
+                    
+                    npoints.append(0)
+                    rmses.append(penalty_rmse)
+                    return penalty_rmse
+
+                # --- NORMAL OPERATION ---
 
                 rmse = np.sqrt(np.mean(np.sum(diffs**2, axis=1)))
 

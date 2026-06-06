@@ -163,6 +163,7 @@ class TreePipeline:
     def run(self, pcs, save_transforms_root, bplt=True):
         # prepare result dict[str, tuple[np.ndarray, list[np.ndarray]]]
         stitching_results = {}
+        self.used_past_run = False
 
         # if save_transforms_root is not a folder but a file only consider the base path
         save_transforms_root = os.path.dirname(save_transforms_root) if os.path.isfile(save_transforms_root) else save_transforms_root
@@ -180,6 +181,7 @@ class TreePipeline:
                 pass
 
             else: # apply existing
+                self.used_past_run = True
                 print(f'[INFO PIPELINE] Applying past pipeline results from: {choice}')
                 stitching_results = self._run_past_pipeline(pcs, os.path.join(save_transforms_root, 'pipelines', choice), bplt=bplt)
                 return stitching_results
