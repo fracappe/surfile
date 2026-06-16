@@ -79,7 +79,7 @@ step_man.add_child(spipe.PipelineStep.pass_through(name="pt_manual"))
 step_man.add_child(step_icp_ch)
 step_man.add_child(step_icp_mm)
 
-pipe = spipe.TreePipeline(root_steps=[step_man], name="manpt_icp_pipe_t2")
+pipe = spipe.TreePipeline(root_steps=[step_man], name="manpt_icp_pipe_t3")
 
 step_man_CAD = spipe.PipelineStep(sst.SurfaceStitcher.stitchManual, recall_from_passtrough='pt_manual_cad', bplt=True)
 step_icp_CAD = spipe.PipelineStep(sst.SurfaceStitcher.stitchICP, name="icp_cad", thresholder=sst.Thresholder(type='KDTree'), isolator=sst.Isolator(type='KDTree'), bplt=True)

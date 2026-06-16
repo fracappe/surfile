@@ -8,8 +8,12 @@ from scipy.spatial import ConvexHull, Delaunay
 
 
 import os, pickle
+import shutil
+import subprocess
+import tempfile
 from functools import wraps
 from surfile import surface
+from surfile.stitcher.blender import *
 
 def to_numpy(item):
     """
@@ -511,3 +515,79 @@ def cut_point_cloud(pc):
 
     return pc_top, pc_bottom
 
+@ensure_numpy_pcd
+def blender_edit_point_cloud(pc, blender_exec: str | None = None) -> np.ndarray:
+    """
+    Open a point cloud in Blender's GUI for manual editing and return the edited cloud.
+
+    This function writes the input point cloud to a temporary PLY file, launches
+    Blender with a small helper script, and waits for Blender to exit. The helper
+    script imports the point cloud and exposes a panel button to export the
+    modified point cloud back to another PLY file before quitting Blender.
+
+    Parameters
+    ----------
+    pc : np.ndarray
+        The input point cloud as an (N, 3) NumPy array.
+    blender_exec : str | None, optional
+        The Blender executable path or command name. If None, the function uses
+        the environment variable ``BLENDER_PATH`` or searches for ``blender`` on
+        the system PATH.
+
+    Returns
+    -------
+    np.ndarray
+        The edited point cloud loaded from the Blender-exported PLY file.
+    """
+    if blender_exec is None:
+        blender_exec = os.environ.get('BLENDER_PATH', 'blender')
+
+    if shutil.which(blender_exec) is None:
+        raise FileNotFoundError(
+            f"Blender executable not found: '{blender_exec}'. "
+            "Install Blender or set the BLENDER_PATH environment variable."
+        )
+    
+    # remove pc barycenter
+    barycenter = np.mean(pc, axis=0)
+    pc = pc - barycenter
+        # rescale from 0 to 1 keeping dimensions
+    scale = 1 / np.max(np.abs(pc))
+    pc = pc * scale
+    
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        input_path = os.path.join(tmp_dir, 'surfile_point_cloud_in.ply')
+        output_path = os.path.join(tmp_dir, 'surfile_point_cloud_out.ply')
+        script_path = os.path.join(tmp_dir, 'blender_point_cloud_editor.py')
+
+        # Save the point cloud so Blender can import it.
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(pc)
+        o3d.io.write_point_cloud(input_path, pcd, write_ascii=True)
+
+        with open(script_path, 'w', encoding='utf-8') as script_file:
+            script_file.write(blender_single_edit_script)
+
+        subprocess.run([
+            blender_exec,
+            '--python', script_path,
+            '--', input_path, output_path,
+        ], check=True)
+
+        if not os.path.exists(output_path):
+            raise RuntimeError(
+                'Blender exited without exporting the modified point cloud. '
+                'Use the "Export Point Cloud and Quit" button in the Surfile panel.'
+            )
+
+        edited_pcd = o3d.io.read_point_cloud(output_path)
+        edited_pc = np.asarray(edited_pcd.points)
+        
+        # reapply scale
+        edited_pc = edited_pc / scale
+        # reapply barycenter 
+        edited_pc = edited_pc + barycenter
+        
+        return edited_pc
+
+    

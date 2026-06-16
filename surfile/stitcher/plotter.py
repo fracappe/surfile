@@ -105,7 +105,7 @@ def show_point_clouds(point_clouds: list[o3d.geometry.PointCloud], colors="norma
     ctypes.windll.user32.SetProcessDPIAware()  # Ensure DPI awareness for correct window sizing on high-DPI displays
 
 @sutils.ensure_o3d_pc
-def compare_point_clouds(pc_lists: list[list[o3d.geometry.PointCloud]], colors="normal", names: None | list[str] = None):
+def     compare_point_clouds(pc_lists: list[list[o3d.geometry.PointCloud]], colors="normal", names: None | list[str] = None):
     """
     Compare multiple lists of point clouds, each in a separate window.
 
