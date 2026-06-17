@@ -25,6 +25,8 @@ import matplotlib.pyplot as plt
 import os
 import open3d as o3d
 import re
+import surfile.stitcher.utils as sutils
+
 
 withigor = 0
 # try:
@@ -41,7 +43,7 @@ except ImportError:
 
 
 ############## point cloud file management ############
-def open_pc_from_file(path: str, NM='remove', userscales=[1, 1, 1], downsample=1) -> np.ndarray:
+def open_pc_from_file(path: str, NM='remove', userscales=[1, 1, 1], downsample=1, sor=False) -> np.ndarray:
     if path.endswith('.txt'):
         with open(path) as f_tmp:
             test = f_tmp.readline()
@@ -77,6 +79,10 @@ def open_pc_from_file(path: str, NM='remove', userscales=[1, 1, 1], downsample=1
 
     pc = pc[::downsample]
 
+    # Clean point cloud by removing outliers
+    if sor:
+        pc = sutils.remove_outliers_from_point_cloud(pc)
+
     return pc
 
 def open_pc_from_dir(path: str, NM='remove', userscales=[1, 1, 1], downsample=1, resave={'resave': False, 'resample': 10}) -> np.ndarray:
@@ -91,7 +97,7 @@ def open_pc_from_dir(path: str, NM='remove', userscales=[1, 1, 1], downsample=1,
         print(f)
 
         try:
-            pc = open_pc_from_file(full_path, NM=NM, userscales=userscales, downsample=downsample)
+            pc = open_pc_from_file(full_path, NM=NM, userscales=userscales, downsample=downsample, sor=False)
 
             pc_list.append(pc)
 

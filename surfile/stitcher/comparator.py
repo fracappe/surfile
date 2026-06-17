@@ -384,8 +384,8 @@ class Comparator:
         elif mode == 'xyz':
             splotter.compare_point_clouds(
                 [[pc] for _, (pc, _) in self.stitched_results.items()],
-        
-    [[splotter.get_rgb_from_3d_weights(self.deltas[method])] for method in self.stitched_results.keys()], names=[f"{method} - XYZ" for method in self.stitched_results.keys()])
+                [[splotter.get_rgb_from_3d_weights(self.deltas[method])] for method in self.stitched_results.keys()], names=[f"{method} - XYZ" for method in self.stitched_results.keys()]
+            )
         
         else:
             print(f"[WARN COMPARATOR] Unknown colormap mode '{mode}'. Supported modes: 'modulus', 'x', 'y', 'z', 'xyz'.")
@@ -797,7 +797,7 @@ class DensityMapPosterior():
                 r'total_error [$\mu$m]': float(mean_total_error / n_clouds),  # $\mu$m
                 r'per_cloud_errors [$\mu$m]': per_cloud_mean_errors,  # $\mu$m
                 r'per_cloud_squared_errors [$\mu$m^2]': per_cloud_squared_errors, # $\mu$m^2
-                r'mean_error_per_cloud [$\mu$m]': float(mean_error_per_cloud),# $\mu$m
+                # r'mean_error_per_cloud [$\mu$m]': float(mean_error_per_cloud),# $\mu$m  equivale a total error
                 r'squared_error_per_cloud [$\mu$m^2]': float(squared_error_per_cloud), # $\mu$m^2
                 r'DMP metric [$\mu$m^2]': float(squared_total_error) # $\mu$m^2
             }
@@ -918,7 +918,7 @@ class DensityMapPosterior():
             total = self.dmp_errors[method].get('DMP metric [$\mu$m^2]', None)
             label = method if total is None else f"{method} (total={total:.6g})"
 
-            ax.plot(x, y, marker='o', linestyle='-', linewidth=1.2, markersize=6, label=label)
+            ax.plot(x, y, marker='o', linestyle='None', markersize=6, label=label)
             lengths.append(len(y))
 
         if not lengths:
@@ -1024,14 +1024,22 @@ class CAD(Comparator):
         inside a radius R, compute the mean of that neighbourhood, and return
         the vector difference between the point and that mean.
     """
-    def __init__(self, stitched_results: dict[str, tuple[np.ndarray, list[np.ndarray]]], cad_points: np.ndarray, pipeline: spipe.TreePipeline, pipeline_path: str, names=None):
+    def __init__(self, 
+                 stitched_results: dict[str, tuple[np.ndarray, list[np.ndarray]]],
+                 cad_points: np.ndarray, 
+                 pipeline: spipe.TreePipeline, 
+                 pipeline_path: str, 
+                 names=None,
+                 bplt: bool = False
+                 ):
         self.cad_points = cad_points
-
         self.pipeline = pipeline
         self.pipeline_path = pipeline_path
 
-        self.stitched_aligned_to_cad = {}
-        super().__init__(self._ensure_stitched_result_dict(stitched_results, names))
+        # self.stitched_aligned_to_cad = {}
+        self.aligned_cad_per_method: dict[str, np.ndarray] = {}
+
+        super().__init__(self._ensure_stitched_result_dict(stitched_results, names), bplt=bplt)
 
     def align_cad_to_stitched(self, bplt: bool = False):
         """

@@ -12,3 +12,5 @@ DepthCapture*
 *.pkl
 .vscode/   
 logger/
+stitch_pipeline_*
+save_colormap_deltas.py

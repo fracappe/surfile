@@ -467,6 +467,7 @@ class Isolator():
         self.axes = axes
 
     def apply_isolator(self, fixed_pts: np.ndarray, moving_pts: np.ndarray, bplt=False):
+        # bplt=True
         if self.type == 'geometrical': return self.isolate_common_points_geometrical(fixed_pts, moving_pts, self.stitchprc, bplt=bplt)
         elif self.type == 'maxmin': return self.isolate_common_points_max_min(fixed_pts, moving_pts, self.axes, bplt=bplt)
         elif self.type == 'KDTree': return self.isolate_common_points_kdtree(fixed_pts, moving_pts, self.max_distance, bplt=bplt)
