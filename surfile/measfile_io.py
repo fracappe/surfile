@@ -85,7 +85,7 @@ def open_pc_from_file(path: str, NM='remove', userscales=[1, 1, 1], downsample=1
 
     return pc
 
-def open_pc_from_dir(path: str, NM='remove', userscales=[1, 1, 1], downsample=1, resave={'resave': False, 'resample': 10}) -> np.ndarray:
+def open_pc_from_dir(path: str, NM='remove', userscales=[1, 1, 1], downsample=1, sor=False, resave={'resave': False, 'resample': 10}) -> np.ndarray:
 
     pc_list = []
     paths = os.listdir(path)
@@ -97,7 +97,7 @@ def open_pc_from_dir(path: str, NM='remove', userscales=[1, 1, 1], downsample=1,
         print(f)
 
         try:
-            pc = open_pc_from_file(full_path, NM=NM, userscales=userscales, downsample=downsample, sor=False)
+            pc = open_pc_from_file(full_path, NM=NM, userscales=userscales, downsample=downsample, sor=sor)
 
             pc_list.append(pc)
 

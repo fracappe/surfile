@@ -345,41 +345,6 @@ def apply_transform(points: np.ndarray, params: TransformParams | np.ndarray, pa
     pts_h = np.hstack([points, np.ones((points.shape[0], 1))])
     return (T @ pts_h.T).T[:, :3]
 
-
-# def KDTree_mutual_diffs(fixed_points, moving_points, k=1):
-#     """
-#     Calculate the difference vectors between mutual nearest neighbors.
-
-#     This function finds pairs of points (one from `fixed_points`, one from
-#     `moving_points`) that are each other's closest neighbor. It then returns
-#     the difference vectors for these mutual pairs.
-
-#     Parameters
-#     ----------
-#     fixed_points : np.ndarray
-#         The (N, 3) fixed point cloud.
-#     moving_points : np.ndarray
-#         The (M, 3) moving point cloud.
-
-#     Returns
-#     -------
-#     np.ndarray
-#         An (K, 3) array of difference vectors for the K mutual pairs found.
-#         Returns `float('inf')` if no mutual pairs are found.
-#     """
-#     fixed_tree = cKDTree(fixed_points)
-#     moving_tree = cKDTree(moving_points)
-
-#     dist_f2m, idx_f2m = moving_tree.query(fixed_points, k=k, workers= -1)
-#     dist_m2f, idx_m2f = fixed_tree.query(moving_points, k=k, workers= -1)
-
-#     selected_points = (np.arange(len(fixed_points)) == idx_m2f[idx_f2m])
-#     if not np.any(selected_points):
-#         return float('inf')
-
-#     diffs = fixed_points[selected_points] - moving_points[idx_f2m[selected_points]]
-#     return diffs
-
 def KDTree_mutual_diffs(fixed_points, moving_points, k=3):
 
     fixed_tree = cKDTree(fixed_points)
@@ -467,7 +432,6 @@ class Isolator():
         self.axes = axes
 
     def apply_isolator(self, fixed_pts: np.ndarray, moving_pts: np.ndarray, bplt=False):
-        # bplt=True
         if self.type == 'geometrical': return self.isolate_common_points_geometrical(fixed_pts, moving_pts, self.stitchprc, bplt=bplt)
         elif self.type == 'maxmin': return self.isolate_common_points_max_min(fixed_pts, moving_pts, self.axes, bplt=bplt)
         elif self.type == 'KDTree': return self.isolate_common_points_kdtree(fixed_pts, moving_pts, self.max_distance, bplt=bplt)

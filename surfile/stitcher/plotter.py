@@ -159,15 +159,6 @@ def compare_point_clouds(pc_lists: list[list[o3d.geometry.PointCloud]], colors="
 
     print(f"[INFO COMPARE PLOT] Plotting {len(pc_lists)} windows in a {rows}x{cols} grid")
 
-    data = {
-        "pc_lists": pc_lists,
-        "colors": colors,
-    }
-    import pickle
-    with open("exported_data.pkl", "wb") as f:
-        pickle.dump(data, f)
-
-
     for i, pc_list in enumerate(pc_lists):
         p = mp.Process(
             target=show_point_clouds,
