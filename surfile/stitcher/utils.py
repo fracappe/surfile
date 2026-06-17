@@ -442,9 +442,13 @@ def remove_outliers_from_point_cloud(point_cloud: o3d.geometry.PointCloud) -> np
     The current implementation uses a fixed number of neighbors (`nb_neighbors=40`)
     and a standard deviation ratio (`std_ratio=3.0`). These parameters might
     need to be adjusted for different point cloud densities and noise levels.
+    `nb_neighbors` high makes open_pc_cloud_from_file extremely heavy, `std_ratio` low gives a more aggressive filtration.
     """
     # TODO: maybe write your own outlier function?
     pc, _ = point_cloud.remove_statistical_outlier(nb_neighbors=40, std_ratio=3.0)
+    # pc, _ = point_cloud.remove_statistical_outlier(nb_neighbors=1000, std_ratio=0.1) # works quite well but not perfectly
+    # pc, _ = point_cloud.remove_radius_outlier(nb_points=10, radius=0.05) # it doesn't work yet
+    
     return np.asarray(pc.points)
 
 def merge_and_downsample_point_cloud(pc1: np.ndarray, pc2: np.ndarray, voxel_size=0.001):
