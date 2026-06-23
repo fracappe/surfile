@@ -1,4 +1,12 @@
 from datetime import datetime
+import os, pickle
+import shutil
+import subprocess
+import tempfile
+
+from functools import wraps
+from surfile import surface
+from surfile.stitcher.blender import *
 
 import open3d as o3d
 import numpy as np
@@ -6,14 +14,6 @@ from scipy import ndimage
 import multiprocessing as mp
 from scipy.spatial import ConvexHull, Delaunay
 
-
-import os, pickle
-import shutil
-import subprocess
-import tempfile
-from functools import wraps
-from surfile import surface
-from surfile.stitcher.blender import *
 
 def to_numpy(item):
     """
@@ -451,18 +451,59 @@ def remove_outliers_from_point_cloud(point_cloud: o3d.geometry.PointCloud) -> np
     
     return np.asarray(pc.points)
 
-def merge_and_downsample_point_cloud(pc1: np.ndarray, pc2: np.ndarray, voxel_size=0.001):
-    """
-    Merge two point clouds and then downsample the result using a voxel grid.
+@ensure_o3d_pc
+def downsample_point_cloud(pc: o3d.geometry.PointCloud, max_points=None, tolerance=0.1, max_iters=25):
+    num_points_before = len(pc.points)
+    
+    if max_points is None or num_points_before <= max_points:
+        print(f'[INFO DOWNSAMPLE] No downsampling needed. Points: {num_points_before}')
+        return np.asarray(pc.points)
 
-    This function combines two point clouds, creates a voxel grid with the
-    specified `voxel_size`, and then averages all points within each voxel
-    to a single point, effectively reducing the point cloud density.
-    """
-    combined = np.vstack([pc1, pc2])
-    pc = pcd_to_o3d_pcd(combined)
-    pc_down = pc.voxel_down_sample(voxel_size=voxel_size)
-    return np.asarray(pc_down.points)
+    # 1. Establish an initial baseline voxel size
+    internal_distances = np.asarray(pc.compute_nearest_neighbor_distance())
+    cloud_resolution = np.mean(internal_distances) if len(internal_distances) > 0 else 0.001
+    
+    # 2. Binary Search bounds for voxel_size
+    # If voxel_size is near 0, we get all points. 
+    # If voxel_size is the bounding box size, we get ~1 point.
+    low_voxel = cloud_resolution 
+    
+    bbox = pc.get_axis_aligned_bounding_box()
+    high_voxel = np.max(bbox.get_max_bound() - bbox.get_min_bound())
+    
+    pc_down = pc
+    num_points_after = num_points_before
+    best_pc_down = pc
+    
+    # Define acceptable boundaries (e.g., within 5% of max_points, but not over it)
+    lower_bound = int(max_points * (1 - tolerance))
+    
+    print(f'[INFO DOWNSAMPLE] Target: {max_points} points. Starting search...')
+
+    for i in range(max_iters):
+        voxel_size = (low_voxel + high_voxel) / 2
+        pc_down = pc.voxel_down_sample(voxel_size=voxel_size)
+        num_points_after = len(pc_down.points)
+        
+        print(f'  Iter {i+1}: voxel_size={voxel_size:.4f} -> points={num_points_after}/{max_points}')
+        
+        # Track the best fit that doesn't exceed max_points
+        if num_points_after <= max_points:
+            best_pc_down = pc_down
+            # If we are within our acceptable tolerance, wrap it up early!
+            if num_points_after >= lower_bound:
+                break
+            # Too few points -> make voxels smaller to keep more points
+            high_voxel = voxel_size 
+        else:
+            # Too many points -> make voxels larger to remove more points
+            low_voxel = voxel_size
+
+    num_points_after = len(best_pc_down.points)
+    reduction_percentage = ((num_points_before - num_points_after) / num_points_before) * 100
+    print(f'[INFO DOWNSAMPLE] Done. Before: {num_points_before}, After: {num_points_after}, Reduction: {reduction_percentage:.2f}%')
+    
+    return np.asarray(best_pc_down.points)
 
 @ensure_numpy_pcd
 def cut_point_cloud(pc):

@@ -4,13 +4,18 @@
 
 @author: Andrea Giura
 """
+import copy
+import multiprocessing as mp
+import os
+import pickle
+from pathlib import Path
+
 from surfile import funct
 import surfile.stitcher.utils as sutils
 import surfile.stitcher.plotter as splotter
 
 import matplotlib.pyplot as plt
 import numpy as np
-
 import open3d as o3d
 from skopt import gp_minimize
 from skopt.space import Real
@@ -18,11 +23,6 @@ from scipy.spatial.transform import Rotation as R
 from scipy.spatial import cKDTree
 from skimage.registration import phase_cross_correlation
 
-import copy
-import multiprocessing as mp
-import os
-import pickle
-from pathlib import Path
 
 class TransformParams:
     """
@@ -841,6 +841,13 @@ class SurfaceStitcher:
     (`fixed`).
     """
     @staticmethod
+    def cloud_combiner(clouds):
+        mc = np.vstack(clouds)
+        mc = sutils.downsample_point_cloud(mc, max_points=80000)
+
+        return mc
+
+    @staticmethod
     @sutils.ensure_numpy_pcd
     def stitchSavedTransforms(point_clouds: list[np.ndarray], transforms_folder, bplt=False):
         """
@@ -898,7 +905,7 @@ class SurfaceStitcher:
             moved = apply_transform(moving, loaded_transforms_params[i])
             point_clouds_T.append(moved)
 
-        fixed = np.vstack(point_clouds_T)
+        fixed = SurfaceStitcher.cloud_combiner(point_clouds_T)
 
         if bplt:
             splotter.compare_point_clouds([[fixed], point_clouds_T], ["normal", "uniform"])
@@ -939,9 +946,6 @@ class SurfaceStitcher:
         """
 
         def get_n_closest_points(pcd, center):
-            # n_points = pcd.shape[0]
-            # auto_radius = (n_points / 100) * 0.05
-            # print(f"RADIUS: {auto_radius}")
             tmp = pcd - center
             modules = np.linalg.norm(tmp, axis=1)
             indices = np.argsort(modules)[:points_in_sphere]
@@ -953,8 +957,6 @@ class SurfaceStitcher:
             return mean_patch_point
 
         def optimize(fixed, moving):
-
-            voxel_size = 100
 
             fixed_o3d = sutils.pcd_to_o3d_pcd(fixed)
             moving_o3d = sutils.pcd_to_o3d_pcd(moving)
@@ -997,7 +999,7 @@ class SurfaceStitcher:
             point_clouds_T.append(moved)
             transforms_matrices.append(RTM.get_matrix())
 
-            fixed = np.vstack([fixed, moved])
+            fixed = fixed = SurfaceStitcher.cloud_combiner([fixed, moved])
 
         if bplt:
             splotter.compare_point_clouds([[fixed], point_clouds_T], ["afmhot", "uniform"])
@@ -1051,9 +1053,9 @@ class SurfaceStitcher:
         fixed = point_clouds_clean[0]
         for pc, trasf in zip(point_clouds_clean, robot_trans):
             pts = pc
-            pts_T = apply_transform(pts, trasf, params0=robot_trans[0])
-            point_clouds_T.append(pts_T)
-            fixed = sutils.merge_and_downsample_point_cloud(fixed, pts_T)  # TODO: check why we downsaple
+            moved = apply_transform(pts, trasf, params0=robot_trans[0])
+            point_clouds_T.append(moved)
+            fixed = fixed = SurfaceStitcher.cloud_combiner([fixed, moved])  # TODO: check why we downsample
             
             # Extract transformation matrix (adjusted with params0)
             T0_inv = np.linalg.inv(robot_trans[0].get_matrix())
@@ -1159,14 +1161,14 @@ class SurfaceStitcher:
 
             moving = np.asarray(pc)
             print(f'[INFO RMSE] Optimizing image {i}')
-            optimized_moving, res = optimize(fixed, moving)
-            point_clouds_T.append(optimized_moving)
+            moved, res = optimize(fixed, moving)
+            point_clouds_T.append(moved)
             
             # Extract transformation matrix from best parameters
             best_p = TransformParams.from_list(res.x)
             transforms_matrices.append(best_p.get_matrix())
 
-            fixed = np.vstack([fixed, optimized_moving])
+            fixed = fixed = SurfaceStitcher.cloud_combiner([fixed, moved])
 
             if bplt:
                 fig, (ax, bx) = plt.subplots(2, 1)
@@ -1252,11 +1254,11 @@ class SurfaceStitcher:
 
             print(f"[INFO ICP] Optimizing image {i}")
 
-            optimized_moving, reg_p2p = optimize(fixed, moving)
-            point_clouds_T.append(optimized_moving)
+            moved, reg_p2p = optimize(fixed, moving)
+            point_clouds_T.append(moved)
             transforms_matrices.append(reg_p2p.transformation)
 
-            fixed = np.vstack([fixed, optimized_moving])
+            fixed = fixed = SurfaceStitcher.cloud_combiner([fixed, moved])
 
         if bplt:
             splotter.compare_point_clouds([[fixed], point_clouds_T], ["viridis", "uniform"])
@@ -1359,10 +1361,10 @@ class SurfaceStitcher:
         for i, pc in enumerate(point_clouds[1:]):
             moving = np.asarray(pc)
             print(f"[INFO FGR] Optimizing image {i}")
-            optimized_moving, T_matrix = optimize(fixed, moving)
-            point_clouds_T.append(optimized_moving)
+            moved, T_matrix = optimize(fixed, moving)
+            point_clouds_T.append(moved)
             transforms_matrices.append(T_matrix)
-            fixed = np.vstack([fixed, optimized_moving])
+            fixed = fixed = SurfaceStitcher.cloud_combiner([fixed, moved])
 
         if bplt:
             splotter.compare_point_clouds([[fixed], point_clouds_T], ["viridis", "uniform"])
@@ -1513,10 +1515,10 @@ class SurfaceStitcher:
         for i, pc in enumerate(point_clouds[1:]):
             moving = np.asarray(pc)
             print(f"[INFO COR] Optimizing image {i}")
-            optimized_moving, tr = optimize(fixed, moving)
-            point_clouds_T.append(optimized_moving)
+            moved, tr = optimize(fixed, moving)
+            point_clouds_T.append(moved)
             transforms_matrices.append(tr.get_matrix())
-            fixed = np.vstack([fixed, optimized_moving])
+            fixed = fixed = SurfaceStitcher.cloud_combiner([fixed, moved])
 
         if bplt:
             splotter.compare_point_clouds([[fixed], point_clouds_T], ["viridis", "uniform"])

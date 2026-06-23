@@ -1,12 +1,12 @@
 import ctypes
+import multiprocessing as mp
+
+import surfile.stitcher.utils as sutils
 
 import open3d as o3d
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
-import multiprocessing as mp
-
-import surfile.stitcher.utils as sutils
 
 
 def get_colors_from_weights(cmap_name, weights, log=False):

@@ -10,11 +10,10 @@ This script will:
 import sys, os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
-import tkinter as tk
-from tkinter import filedialog
 import surfile.stitcher.plotter as splotter
-import surfile.measfile_io as fio
 import time
+
+from tests.file_helper import *
 
 
 def run_test(test_name, func, *args, **kwargs):
@@ -30,25 +29,7 @@ def run_test(test_name, func, *args, **kwargs):
 
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    root.withdraw()  # Hide the main window
-    folder_path = filedialog.askdirectory(
-        title="Select a Folder with Point Cloud Files (.txt, .npy, .stl)"
-    )
-
-    if not folder_path:
-        print("No folder selected. Exiting test script.")
-        exit()
-
-    print(f"Loading point clouds from: {folder_path}")
-    try:
-        point_clouds_np = fio.open_pc_from_dir(folder_path, downsample=5)
-        if not point_clouds_np:
-            raise ValueError("No point clouds were loaded.")
-        print(f"Successfully loaded {len(point_clouds_np)} point clouds.")
-    except Exception as e:
-        print(f"❌ Failed to load point clouds: {e}")
-        exit()
+    point_clouds_np = open_files()
 
     run_test("show_point_clouds with 'uniform' colors",
              splotter.show_point_clouds, point_clouds_np, colors="uniform")

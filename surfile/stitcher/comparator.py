@@ -39,9 +39,16 @@ class DensityMapPosterior
 """
 
 from __future__ import annotations
-
 import itertools
 from typing import Callable, Sequence
+import pickle
+import os
+import pathlib
+
+from surfile.stitcher import stitcher as sstitcher
+from surfile.stitcher import plotter as splotter
+from surfile.stitcher import pipeline as spipe
+from surfile.stitcher import utils as sutils
 
 import scipy
 from tqdm import tqdm
@@ -49,16 +56,7 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import numpy as np
 from scipy.spatial import cKDTree
-import open3d as o3d
-import pickle
-import os
-import pathlib
-import matplotlib.patches as mpatches
 
-from surfile.stitcher import stitcher as sstitcher
-from surfile.stitcher import plotter as splotter
-from surfile.stitcher import pipeline as spipe
-from surfile.stitcher import utils as sutils
 
 _COMPONENT_LABELS = ("x", "y", "z")
 _COL_TITLES = (fr"$\left|\Delta\right|$", r"$\Delta$x", r"$\Delta$y", r"$\Delta$z")
@@ -510,6 +508,7 @@ def make_compute_R(point_clouds_T):
     https://doi.org/10.1016/j.isprsjprs.2013.04.009
     """
     R_vals = []
+    g_vals = []
 
     for i in range(len(point_clouds_T) - 1):
         fixed_pts = point_clouds_T[i]
@@ -522,13 +521,11 @@ def make_compute_R(point_clouds_T):
         cloud_resolution = np.mean(internal_distances)
 
         r_patch = cloud_resolution * 5.0 
+        R_vals.append(r_patch)
 
         distances = np.asarray(apc.compute_point_cloud_distance(fppc))
-
         g = np.percentile(distances, 50) 
-
-        R = np.sqrt(g**2 + r_patch**2)
-        R_vals.append(R)
+        g_vals.append(g)
 
         if False:
             fig, ax = plt.subplots()
@@ -545,11 +542,14 @@ def make_compute_R(point_clouds_T):
             plt.show()
 
     R_value = float(np.mean(R_vals))
+    g_value = float(np.mean(g_vals))
+
+    R = np.sqrt(g_value**2 + R_value**2)
     print(f"Computed neighbourhood radius R = {R_value:.6f}")
-    print(f"Based on patch radius = {r_patch:.6f} and typical gap = {g:.6f}")
+    print(f"Based on patch radius = {r_patch:.6f} and typical gap = {g_value:.6f}")
 
     def compute_R(*args, **kwargs):
-        return R_value
+        return R
 
     return compute_R
 
@@ -583,7 +583,6 @@ def compute_deltas(
     deltas = np.empty((n, 3), dtype=float)
     R = float(compute_R())
     
-    print(f"Starting KDTree query_ball_point execution with radius {R}...")
     idx = tree.query_ball_point(stitched, r=R) # This operation can be slow for large point clouds
     # _, idx = tree.query(stitched, k=30)
     
@@ -636,6 +635,7 @@ class BallQuery(Comparator):
         for method_name, restuple in self.stitched_results.items():
             stitched, stitched_T = restuple
             cR = make_compute_R(stitched_T)
+            print(f"[INFO COMPARATOR] Starting KDTree query_ball_point execution for method {method_name}")
             self.deltas[method_name] = compute_deltas(stitched, cR)
 
     def save_deltas(self):
@@ -644,7 +644,6 @@ class BallQuery(Comparator):
             with open(self.save_path, "wb") as f:
                 pickle.dump({
                     "deltas": self.deltas,
-                    # "errors": self.dmp_errors if hasattr(self, 'dmp_errors') else None,
                 }, f)
 
  
@@ -786,9 +785,9 @@ class DensityMapPosterior():
                 squared_error = float(np.sum(distances ** 2))
 
                 per_cloud_mean_errors.append(mean_error)
-                per_cloud_squared_errors.append(squared_error)
+                per_cloud_squared_errors.append(squared_error / len(distances))
                 mean_total_error += mean_error   # $\mu$m
-                squared_total_error += squared_error # $\mu$m^2
+                squared_total_error += squared_error / len(distances) # $\mu$m^2
 
             mean_error_per_cloud = np.mean(per_cloud_mean_errors)
             squared_error_per_cloud = np.mean(per_cloud_squared_errors)

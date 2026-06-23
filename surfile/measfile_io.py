@@ -85,7 +85,7 @@ def open_pc_from_file(path: str, NM='remove', userscales=[1, 1, 1], downsample=1
 
     return pc
 
-def open_pc_from_dir(path: str, NM='remove', userscales=[1, 1, 1], downsample=1, sor=False, resave={'resave': False, 'resample': 10}) -> np.ndarray:
+def open_pc_from_dir(path: str, NM='remove', userscales=[1, 1, 1], downsample=1, blender=False, sor=False, resave=False) -> np.ndarray:
 
     pc_list = []
     paths = os.listdir(path)
@@ -98,15 +98,15 @@ def open_pc_from_dir(path: str, NM='remove', userscales=[1, 1, 1], downsample=1,
 
         try:
             pc = open_pc_from_file(full_path, NM=NM, userscales=userscales, downsample=downsample, sor=sor)
+            if blender: pc = sutils.blender_edit_point_cloud(pc)
 
             pc_list.append(pc)
 
-            if resave['resave']:
-                pc = pc[::resave['resample']]
+            if resave:
                 np.save(full_path + '_resaved.npy', pc, allow_pickle=True)
 
         except Exception as e:
-            print(f"{e} ---> {full_path}")
+            print(f"[ERROR IO] {e} ---> {full_path}")
     
     assert len(pc_list) > 0, "[ERROR OPEN PC FILE] Empty list!!!" 
 

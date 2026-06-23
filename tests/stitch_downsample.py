@@ -29,7 +29,7 @@ def apply_downsampling(downsample_factor=5, folder=None):
 
     print(f"Loading point clouds from: {folder}")
     try:
-        point_clouds_np = fio.open_pc_from_dir(folder, downsample=downsample_factor, resave={'resave': True, 'resample': downsample_factor})
+        point_clouds_np = fio.open_pc_from_dir(folder, downsample=downsample_factor, resave=True)
         if not point_clouds_np:
             raise ValueError("No point clouds were loaded.")
         print(f"Successfully loaded and downsampled {len(point_clouds_np)} point clouds.")
@@ -39,4 +39,4 @@ def apply_downsampling(downsample_factor=5, folder=None):
 
 
 if __name__ == "__main__":
-    apply_downsampling(downsample_factor=1)
+    apply_downsampling(downsample_factor=15)
