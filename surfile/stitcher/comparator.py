@@ -927,7 +927,7 @@ class DensityMapPosterior():
         max_n = max(lengths)
         xticks = np.arange(max_n)
         ax.set_xticks(xticks)
-        ax.set_xticklabels([f"$M_{i}$" for i in xticks])
+        ax.set_xticklabels(["$M_{" + str(i) + "}$" for i in xticks])
 
         ax.set_xlabel("point cloud ($M_i$)")
         ax.set_ylabel("per-cloud squared DMP error [$\mu m^2$]")
@@ -1001,7 +1001,7 @@ class DensityMapPosterior():
                 else:
                     ax.hist(d, bins=bins, color='C0', alpha=0.85)
                     
-                ax.set_title(f"{method} — $M_{i}$", fontsize=8)
+                ax.set_title(f"{method} - " + "$M_{" + str(i) + "}$", fontsize=8)
                 ax.set_xlabel('distance')
                 ax.set_ylabel('count')
                 ax.grid(True, linestyle='--', alpha=0.4)
@@ -1035,7 +1035,7 @@ class CAD(Comparator):
         self.pipeline = pipeline
         self.pipeline_path = pipeline_path
 
-        # self.stitched_aligned_to_cad = {}
+        self.stitched_aligned_to_cad = {}
         self.aligned_cad_per_method: dict[str, np.ndarray] = {}
 
         super().__init__(self._ensure_stitched_result_dict(stitched_results, names), bplt=bplt)
@@ -1060,8 +1060,16 @@ class CAD(Comparator):
     def compute(self):
         self.align_cad_to_stitched(bplt=False)
 
+        output_folder = os.path.join(self.pipeline_path, "CAD_comparator")
+    
+        os.makedirs(output_folder, exist_ok=True)
+
         for key in self.stitched_aligned_to_cad:
-            bq = BallQuery(stitched_results=self.stitched_aligned_to_cad[key])
+
+            file_name = f"{key}_CAD_BallQuery_deltas.pkl" 
+            full_save_path = os.path.join(output_folder, file_name)            
+            bq = BallQuery(save_path=full_save_path, stitched_results=self.stitched_aligned_to_cad[key])
+
             bq.plot_deltas(noise_threshold=0.5)
             bq.plot_histograms(noise_threshold=0.5)
             bq.colormap_deltas(mode='xyz')

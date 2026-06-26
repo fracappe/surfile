@@ -110,7 +110,7 @@ def _prompt_user_for_run_choice(past_runs):
 class PipelineStep:
     f: callable
     
-    def __init__(self, f, name=None, recall_from_passtrough=None, **kwargs):
+    def __init__(self, f, name, recall_from_passtrough=None, **kwargs):
         self.f = f
         self.name = name
         self.kwargs = kwargs
@@ -149,6 +149,16 @@ class PipelineStep:
         else:
             for child in self.children:
                 child._check_all_leaves_have_name()
+
+    def attach_pt(self):
+        if len(self.children) > 0:
+            if self.name is not None:
+                self.children.append(PipelineStep.pass_through('intermediate_' + self.name))
+            else:
+                print('[INFO PIPESTEP] Could not add passtrough to step with no name')
+
+        for child in self.children:
+            child.attach_pt()
     
     def run(self, pcs, current_transforms, base_save_path=None, bplt_override=False) -> dict[str, tuple[np.ndarray, list[np.ndarray]]]:
         """
@@ -191,11 +201,12 @@ class PipelineStep:
         if not self.children:
             if base_save_path is not None:
                 self._save(new_global_transforms, base_save_path, self.name)
+                print(f'[INFO PIPESTEP] Saving leaf result: {self.name}')
             return {self.name: (fixed, next_pcs)}
 
         leaf_results = {}
         for child in self.children:
-            child_results = child.run(next_pcs, new_global_transforms, base_save_path)
+            child_results = child.run(next_pcs, new_global_transforms, base_save_path, bplt_override)
             leaf_results.update(child_results)
         return leaf_results
 
@@ -203,7 +214,6 @@ class PipelineStep:
         save_folder = os.path.join(base_path, leaf_path_name)
             
         os.makedirs(save_folder, exist_ok=False)
-        print(f"[INFO PIPELINE] Saving leaf results to: {leaf_path_name}")
         for i, T in enumerate(transforms):
             with open(os.path.join(save_folder, f"{i}.pkl"), "wb") as f:
                 pickle.dump(T, f)
@@ -294,9 +304,10 @@ class TreePipeline:
     def _run_past_pipeline(self, pcs, past_run_folder, bplt=False):
         stitching_results = {}
 
-        for subdir in os.listdir(past_run_folder):
+        for subdir in _find_subfolders_with_prefix(past_run_folder, prefix=''):
             fixed, next_pcs, _ = sstitcher.SurfaceStitcher.stitchSavedTransforms(pcs, os.path.join(past_run_folder, subdir), bplt=bplt)
-            stitching_results[subdir] = (fixed, next_pcs)
+            name = os.path.basename(subdir)
+            stitching_results[name] = (fixed, next_pcs)
         return stitching_results
 
 
@@ -322,26 +333,39 @@ class ReuseLevel:
     REUSE_EVERYTHING  = "reuse_everything"
 
 
-def _make_maxmin_isolator() -> sstitcher.Isolator:
-    """Axis-aligned bounding-box overlap isolator (x and y axes)."""
-    return sstitcher.Isolator(type='maxmin', axes='xy')
+class IsolatorSpec:
+    def __init__(self, type, kwargs: dict):
+        self.type = type
+        self.kwargs = kwargs
+
+    def build_isol(self) -> PipelineStep:
+        return sstitcher.Isolator(
+            type = self.type,
+            **self.kwargs
+        )
 
 
-def _make_kdtree_isolator() -> sstitcher.Isolator:
-    """Mutual KDTree nearest-neighbour distance isolator."""
-    return sstitcher.Isolator(type='KDTree', max_distance=[0.5])
+def build_default_isolator_specs(
+    build_methods: list[str] = ['maxmin', 'KDTree', 'convex_hull'],
+    KDTree_distance = [0],
+    max_min_axes = 'xyz'
+) -> dict[str, IsolatorSpec]:
+    ispecs = {}
 
+    if 'maxmin' in build_methods:
+        ispecs.update({
+            'maxmin': IsolatorSpec('maxmin', kwargs=dict(axes=max_min_axes))
+        })
+    if 'KDTree' in build_methods:
+        ispecs.update({
+            'KDTree': IsolatorSpec('KDTree', kwargs=dict(max_distance=KDTree_distance))
+        })
+    if 'convex_hull' in build_methods:
+        ispecs.update({
+            'convex_hull': IsolatorSpec('convex_hull', kwargs={})
+        })
 
-def _make_convex_hull_isolator() -> sstitcher.Isolator:
-    """Convex-hull overlap isolator."""
-    return sstitcher.Isolator(type='convex_hull')
-
-
-ISOLATOR_REGISTRY: dict[str, Callable[[], sstitcher.Isolator]] = {
-    'maxmin':      _make_maxmin_isolator,
-    'KDTree':      _make_kdtree_isolator,
-    'convex_hull': _make_convex_hull_isolator,
-}
+    return ispecs
 
 
 class StitcherSpec:
@@ -392,9 +416,9 @@ class StitcherSpec:
 
 def build_default_stitcher_specs(
     build_methods: list[str] = ['rmse', 'icp', 'fgr'],
-    rmse_n_calls: int       = 50,    # I tried with 30, let's see if with 50 it's better
+    rmse_n_calls: int       = 50,   
     icp_threshold_type: str = 'KDTree',
-    fgr_voxel_size: float   = 0.1,    # I tried with 0.05, let's see if with 0.1 it's better
+    fgr_voxel_size: float   = 0.1,    
     fgr_threshold_type: str = 'KDTree',
     bplt: bool              = False,
 ) -> dict[str, StitcherSpec]:
@@ -452,6 +476,7 @@ def build_default_stitcher_specs(
 
     return sspecs
 
+
 def _node_label(stitcher_name: str, isolator_name: str, depth: int, parent_label: str = "") -> str:
     """
     Produce a unique, readable node label that accumulates chain history.
@@ -469,6 +494,7 @@ def _node_label(stitcher_name: str, isolator_name: str, depth: int, parent_label
 def _build_chain_progressive_methods(
     stitcher_sequence: list[str],
     isolator_name: str,
+    isolator_specs: dict[str, IsolatorSpec],
     stitcher_specs: dict[str, StitcherSpec],
 ) -> list[PipelineStep]:
     """
@@ -493,7 +519,6 @@ def _build_chain_progressive_methods(
         Steps in chain order; index 0 is the first child of the root.
     """
     chain = []
-    isolator_factory = ISOLATOR_REGISTRY[isolator_name]
 
     # Track the pipeline path so folders retain their history
     cumulative_label = ""
@@ -501,8 +526,8 @@ def _build_chain_progressive_methods(
     for depth, stitcher_name in enumerate(stitcher_sequence, start=1):
         cumulative_label = _node_label(stitcher_name, isolator_name, depth, cumulative_label)   
 
-        step  = stitcher_specs[stitcher_name].build_step(
-            isolator=isolator_factory(),
+        step = stitcher_specs[stitcher_name].build_step(
+            isolator=isolator_specs[isolator_name].build_isol(),
             node_label=cumulative_label,
         )
         chain.append(step)
@@ -514,6 +539,7 @@ def _build_chain_progressive_isolators(
     isolator_sequence: list[str],
     stitcher_name: str,
     stitcher_specs: dict[str, StitcherSpec],
+    isolator_specs: dict[str, IsolatorSpec],
 ) -> list[PipelineStep]:
     """
     Build a linear chain of ``PipelineStep`` objects for Mode 2.
@@ -541,11 +567,10 @@ def _build_chain_progressive_isolators(
     cumulative_label = ""
 
     for depth, isolator_name in enumerate(isolator_sequence, start=1):
-        isolator_factory = ISOLATOR_REGISTRY[isolator_name]
         cumulative_label = _node_label(stitcher_name, isolator_name, depth, cumulative_label)
 
         step  = stitcher_specs[stitcher_name].build_step(
-            isolator=isolator_factory(),
+            isolator=isolator_specs[isolator_name].build_isol(),
             node_label=cumulative_label,
         )
         chain.append(step)
@@ -617,14 +642,16 @@ class MultilevelPipelineBuilder:
         mode: str,
         max_depth: int,
         stitcher_specs: dict[str, StitcherSpec],
-        isolator_names: list[str] | None = None,
+        isolator_specs: dict[str, IsolatorSpec],
+        save_intermediate = False,
         manual_step_name: str = "pt_manual",
         pipeline_name: str    = "multilevel_evaluation_pipeline",
     ):
         self.mode             = mode
         self.max_depth        = max_depth
         self.stitcher_specs   = stitcher_specs
-        self.isolator_names   = isolator_names or list(ISOLATOR_REGISTRY.keys())
+        self.isolator_specs   = isolator_specs
+        self.save_intermediate = save_intermediate
         self.manual_step_name = manual_step_name
         self.pipeline_name    = pipeline_name
 
@@ -644,6 +671,8 @@ class MultilevelPipelineBuilder:
             self._attach_progressive_methods_branches(manual_root)
         else:
             self._attach_progressive_isolators_branches(manual_root)
+
+        if self.save_intermediate: manual_root.attach_pt()
 
         return TreePipeline(
             root_steps=[manual_root],
@@ -666,7 +695,7 @@ class MultilevelPipelineBuilder:
             pool_size = len(self.stitcher_specs)
             pool_name = "stitcher_specs"
         else:
-            pool_size = len(self.isolator_names)
+            pool_size = len(self.isolator_specs)
             pool_name = "isolator_names"
 
         if self.max_depth > pool_size:
@@ -684,6 +713,7 @@ class MultilevelPipelineBuilder:
         root = PipelineStep(
             sstitcher.SurfaceStitcher.stitchManual,
             bplt=False,
+            name='manual',
             recall_from_passtrough=self.manual_step_name,
         )
         root.add_child(PipelineStep.pass_through(name=self.manual_step_name))
@@ -706,11 +736,12 @@ class MultilevelPipelineBuilder:
         """
         stitcher_names = list(self.stitcher_specs.keys())
 
-        for isolator_name in self.isolator_names:
+        for isolator_name in self.isolator_specs:
             for stitcher_sequence in itertools.permutations(stitcher_names, self.max_depth):
                 chain = _build_chain_progressive_methods(
                     stitcher_sequence=list(stitcher_sequence),
                     isolator_name=isolator_name,
+                    isolator_specs=self.isolator_specs,
                     stitcher_specs=self.stitcher_specs,
                 )
                 _link_chain_to_parent(manual_root, chain)
@@ -730,12 +761,15 @@ class MultilevelPipelineBuilder:
         the pool of isolator names are produced via
         ``itertools.permutations(isolator_names, max_depth)``.
         """
+        isol_names = list(self.isolator_specs.keys())
+
         for stitcher_name in self.stitcher_specs.keys():
-            for isolator_sequence in itertools.permutations(self.isolator_names, self.max_depth):
+            for isolator_sequence in itertools.permutations(isol_names, self.max_depth):
                 chain = _build_chain_progressive_isolators(
                     isolator_sequence=list(isolator_sequence),
                     stitcher_name=stitcher_name,
                     stitcher_specs=self.stitcher_specs,
+                    isolator_specs=self.isolator_specs
                 )
                 _link_chain_to_parent(manual_root, chain)
 
@@ -902,6 +936,7 @@ def _prompt_reuse_level(
             return options[int(raw) - 1][0]
         print(f"  Please enter a number between 1 and {len(options)}.")
 
+
 def _collect_leaf_results(
     stitching_results: dict,
 ) -> dict:
@@ -924,7 +959,7 @@ def _collect_leaf_results(
     return {
         key: value
         for key, value in stitching_results.items()
-        if not key.endswith("_intermediate")
+        if not "intermediate" in key
     }
 
 
@@ -1054,6 +1089,27 @@ def _run_density_map_evaluation(
     return summary, fig_deltas, fig_histograms, None
 
 
+def _run_CAD_comparator(
+    stitching_results: dict,
+    noise_threshold: float,
+    save_path: str | None,
+    bplt: bool,
+    CAD_comparator_folder: str | None = None,
+) -> tuple:
+    
+    print("\n[INFO EVAL] Running CAD BallQuery comparator...")
+    CAD_bq  = scomp.CAD(save_path, stitching_results, bplt=False)
+    summary = CAD_bq.print_summary()
+
+    if bplt:
+        fig_deltas     = CAD_bq.plot_deltas(noise_threshold=noise_threshold)
+        fig_histograms = CAD_bq.plot_histograms(noise_threshold=noise_threshold)
+        fig_colormap   = CAD_bq.colormap_deltas()
+        plt.show()
+
+    return summary, fig_deltas, fig_histograms, fig_colormap
+
+
 class OutputPaths:
     """
     Holds every folder and file path involved in a single evaluation run.
@@ -1124,26 +1180,17 @@ class MultilevelEvaluationRunner:
 
     def __init__(
         self,
-        mode: str,
-        max_depth: int,
-        stitcher_specs: dict[str, StitcherSpec],
-        isolator_names: list[str] | None = None,
+        builder: MultilevelPipelineBuilder,
+        evaluators: list[str] = ['ballquery', 'dmp'],
         evaluate_intermediate: bool      = False,
         noise_threshold: float           = 0.05,
-        manual_step_name: str            = "pt_manual",
-        pipeline_name: str               = "multilevel_evaluation_pipeline",
     ):
-        self.builder = MultilevelPipelineBuilder(
-            mode=mode,
-            max_depth=max_depth,
-            stitcher_specs=stitcher_specs,
-            isolator_names=isolator_names,
-            manual_step_name=manual_step_name,
-            pipeline_name=pipeline_name,
-        )
-        self.pipeline_name         = pipeline_name
+        self.builder = builder
+        self.pipeline_name         = self.builder.pipeline_name
         self.evaluate_intermediate = evaluate_intermediate
         self.noise_threshold       = noise_threshold
+
+        self.evaluators = evaluators
 
     # ------------------------------------------------------------------
     # Public interface
@@ -1201,7 +1248,7 @@ class MultilevelEvaluationRunner:
             if selected_pipeline_folder is None:
                 return self._run_full(pcs, output_root, bplt_pipeline, bplt_comparators)
             return self._run_comparators_only(
-                selected_pipeline_folder, output_root, pcs, bplt_comparators
+                selected_pipeline_folder, output_root, pcs, bplt_pipeline, bplt_comparators
             )
 
         # ReuseLevel.REUSE_EVERYTHING
@@ -1276,6 +1323,7 @@ class MultilevelEvaluationRunner:
         pipeline_folder: str,
         output_root: str,
         pcs: list[np.ndarray],
+        bplt_pipeline: bool,
         bplt_comparators: bool,
     ) -> dict:
         """
@@ -1311,7 +1359,7 @@ class MultilevelEvaluationRunner:
         # Build a temporary TreePipeline shell — only name matters here;
         # root_steps are never executed in this branch.
         shell_pipeline     = TreePipeline(root_steps=[], name=self.pipeline_name)
-        stitching_results  = shell_pipeline._run_past_pipeline(pcs, pipeline_folder, bplt=False)
+        stitching_results  = shell_pipeline._run_past_pipeline(pcs, pipeline_folder, bplt=bplt_pipeline)
 
         # Derive a pseudo-timestamp from the folder name so new comparator
         # pickles land in a clearly labelled file and don't overwrite existing ones.
@@ -1400,20 +1448,60 @@ class MultilevelEvaluationRunner:
         dict
             Evaluation result dict.
         """
-        summary_bq, fig_deltas_bq, fig_hist_bq, fig_cmap_bq = _run_ball_query_evaluation(
-            stitching_results=results_to_evaluate,
-            noise_threshold=self.noise_threshold,
-            save_path=paths.ball_query_pickle,
-            bplt=bplt_comparators,
-        )
-        summary_dmp, fig_deltas_dmp, fig_hist_dmp, _ = _run_density_map_evaluation(
-            stitching_results=results_to_evaluate,
-            save_path=paths.density_map_pickle,
-            bplt=bplt_comparators,
-        )
+        summary_bq, fig_deltas_bq, fig_hist_bq, fig_cmap_bq = None, None, None, None
+        summary_dmp, fig_deltas_dmp, fig_hist_dmp = None, None, None
+
+        if 'ballquery' in self.evaluators: 
+            summary_bq, fig_deltas_bq, fig_hist_bq, fig_cmap_bq = _run_ball_query_evaluation(
+                stitching_results=results_to_evaluate,
+                noise_threshold=self.noise_threshold,
+                save_path=paths.ball_query_pickle,
+                bplt=bplt_comparators,
+            )
+        if 'dmp' in self.evaluators:
+            summary_dmp, fig_deltas_dmp, fig_hist_dmp, _ = _run_density_map_evaluation(
+                stitching_results=results_to_evaluate,
+                save_path=paths.density_map_pickle,
+                bplt=bplt_comparators,
+            )
         return _package_evaluation_output(
             summary_bq, fig_deltas_bq, fig_hist_bq, fig_cmap_bq,
             summary_dmp, fig_deltas_dmp, fig_hist_dmp,
+        )
+    
+
+    def _evaluate_with_CAD(
+        self,
+        results_to_evaluate: dict,
+        paths: OutputPaths,
+        bplt_CAD: bool,
+    ) -> dict:
+        """
+        Run comparator BallQuery against ``results_to_evaluate`` and package output.
+
+        Parameters
+        ----------
+        results_to_evaluate : dict
+            Stitching results to pass to comparator CAD.
+        paths : OutputPaths
+            Pre-built path bundle for this run.
+        bplt_CAD : bool
+            Show comparator plots.
+
+        Returns
+        -------
+        dict
+            Evaluation result dict.
+        """
+        summary_bq, fig_deltas_bq, fig_hist_bq, fig_cmap_bq = _run_CAD_comparator(
+            stitching_results=results_to_evaluate,
+            noise_threshold=self.noise_threshold,
+            save_path=paths.ball_query_pickle,
+            bplt=bplt_CAD,
+        )
+
+        return _package_evaluation_output(
+            summary_bq, fig_deltas_bq, fig_hist_bq, fig_cmap_bq,
         )
 
 

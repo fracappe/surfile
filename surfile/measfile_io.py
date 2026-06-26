@@ -43,7 +43,7 @@ except ImportError:
 
 
 ############## point cloud file management ############
-def open_pc_from_file(path: str, NM='remove', userscales=[1, 1, 1], downsample=1, sor=False) -> np.ndarray:
+def  open_pc_from_file(path: str, NM='remove', userscales=[1, 1, 1], downsample=1, sor=False) -> np.ndarray:
     if path.endswith('.txt'):
         with open(path) as f_tmp:
             test = f_tmp.readline()

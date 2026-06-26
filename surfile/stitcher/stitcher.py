@@ -840,10 +840,13 @@ class SurfaceStitcher:
     point cloud (`moving`) to the accumulated result of the previous alignments
     (`fixed`).
     """
+    cloud_combiner_max_points = 100000
+    plotter_colors = ["plasma", "uniform"]
+
     @staticmethod
     def cloud_combiner(clouds):
         mc = np.vstack(clouds)
-        mc = sutils.downsample_point_cloud(mc, max_points=80000)
+        mc = sutils.downsample_point_cloud(mc, max_points=SurfaceStitcher.cloud_combiner_max_points)
 
         return mc
 
@@ -908,7 +911,7 @@ class SurfaceStitcher:
         fixed = SurfaceStitcher.cloud_combiner(point_clouds_T)
 
         if bplt:
-            splotter.compare_point_clouds([[fixed], point_clouds_T], ["normal", "uniform"])
+            splotter.compare_point_clouds([[fixed], point_clouds_T], SurfaceStitcher.plotter_colors)
 
         return fixed, point_clouds_T, loaded_transforms_params
 
@@ -1002,7 +1005,7 @@ class SurfaceStitcher:
             fixed = fixed = SurfaceStitcher.cloud_combiner([fixed, moved])
 
         if bplt:
-            splotter.compare_point_clouds([[fixed], point_clouds_T], ["afmhot", "uniform"])
+            splotter.compare_point_clouds([[fixed], point_clouds_T], SurfaceStitcher.plotter_colors)
 
         return fixed, point_clouds_T, transforms_matrices
 
@@ -1063,7 +1066,7 @@ class SurfaceStitcher:
             transforms_matrices.append(T_matrix)
 
         if bplt:
-            splotter.compare_point_clouds([[fixed], point_clouds_T], ["afmhot", "uniform"])
+            splotter.compare_point_clouds([[fixed], point_clouds_T], SurfaceStitcher.plotter_colors)
 
         return fixed, point_clouds_T, transforms_matrices
 
@@ -1185,7 +1188,7 @@ class SurfaceStitcher:
                 bx.grid(True)
 
         if bplt:
-            splotter.compare_point_clouds([[fixed], point_clouds_T], ["viridis", "uniform"])
+            splotter.compare_point_clouds([[fixed], point_clouds_T], SurfaceStitcher.plotter_colors)
 
         return fixed, point_clouds_T, transforms_matrices
 
@@ -1261,7 +1264,7 @@ class SurfaceStitcher:
             fixed = fixed = SurfaceStitcher.cloud_combiner([fixed, moved])
 
         if bplt:
-            splotter.compare_point_clouds([[fixed], point_clouds_T], ["viridis", "uniform"])
+            splotter.compare_point_clouds([[fixed], point_clouds_T], SurfaceStitcher.plotter_colors)
 
         return fixed, point_clouds_T, transforms_matrices
 
@@ -1367,7 +1370,7 @@ class SurfaceStitcher:
             fixed = fixed = SurfaceStitcher.cloud_combiner([fixed, moved])
 
         if bplt:
-            splotter.compare_point_clouds([[fixed], point_clouds_T], ["viridis", "uniform"])
+            splotter.compare_point_clouds([[fixed], point_clouds_T], SurfaceStitcher.plotter_colors)
 
         return fixed, point_clouds_T, transforms_matrices
 
@@ -1521,7 +1524,7 @@ class SurfaceStitcher:
             fixed = fixed = SurfaceStitcher.cloud_combiner([fixed, moved])
 
         if bplt:
-            splotter.compare_point_clouds([[fixed], point_clouds_T], ["viridis", "uniform"])
+            splotter.compare_point_clouds([[fixed], point_clouds_T], SurfaceStitcher.plotter_colors)
 
         return fixed, point_clouds_T, transforms_matrices
     

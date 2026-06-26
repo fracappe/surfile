@@ -105,7 +105,7 @@ def show_point_clouds(point_clouds: list[o3d.geometry.PointCloud], colors="norma
     ctypes.windll.user32.SetProcessDPIAware()  # Ensure DPI awareness for correct window sizing on high-DPI displays
 
 @sutils.ensure_o3d_pc
-def     compare_point_clouds(pc_lists: list[list[o3d.geometry.PointCloud]], colors="normal", names: None | list[str] = None):
+def compare_point_clouds(pc_lists: list[list[o3d.geometry.PointCloud]], colors="normal", names: None | list[str] = None):
     """
     Compare multiple lists of point clouds, each in a separate window.
 
@@ -339,7 +339,7 @@ def assign_defined_colors_to_point_clouds(point_clouds: list[o3d.geometry.PointC
                 ncolors = (normals + 1) / 2  # da [-1,1] a [0,1]
                 pc.colors = o3d.utility.Vector3dVector(ncolors)
 
-            elif colors == "betternormal":
+            elif colors in ["betternormal", "unicorn"]:
                 ncolors, _, _, _ = color_points_from_closest_triangle_normal(pc)
                 pc.colors = o3d.utility.Vector3dVector(ncolors)
 
